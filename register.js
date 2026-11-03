@@ -11,24 +11,30 @@ VIEWS.reg = async (el) => {
   try {
     if (!REG) {
       const L = await locator(note); const N = names();
-      const fl = await files([{ kind: 'workSite', group: '_all' }, { kind: 'fmc', group: '*' }, { kind: 'assetChange', group: '_all' }, { kind: 'machineProg', group: '_all' }, { kind: 'spotCards', group: '_all' }, { kind: 'feed', group: '_all' }], note);
+      const fl = await files([{ kind: 'workSite', group: '_all' }, { kind: 'fmc', group: '*' }, { kind: 'assetChange', group: '_all' }, { kind: 'machineProg', group: '_all' }, { kind: 'spotCards', group: '_all' }, { kind: 'feed', group: '_all' }, { kind: 'fmcDays', group: '*' }], note);
       const feed = snap(fl, 'feed', '_all') || { work: [], units: [] };
-      const fmc = PE.fmcLocate(merge(fl, 'fmc'), L); const ws = merge(fl, 'workSite', '_all');
+      const S0 = H.settings(); const fmc = PE.fmcLocate(merge(fl, 'fmc').map(r => PE.fmcClean(r, S0)).filter(Boolean), L); const ws = merge(fl, 'workSite', '_all');   // [PB] B2: "----" rows are not work
+      fmc.forEach(r => PE.lineType(r, 'fmc', N)); ws.forEach(r => PE.lineType(r, 'workSite', N));
       const cov = {}; Object.entries((H.S.boot && H.S.boot.fmc && H.S.boot.fmc.coverage) || {}).forEach(([d, v]) => { cov[d] = v; });
       const pk = PE.buildPackages(fmc, ws, { ac: merge(fl, 'assetChange', '_all'), mp: merge(fl, 'machineProg', '_all'), fw: feed.work || [], sc: merge(fl, 'spotCards', '_all') }, { S: H.settings(), N, coverage: cov });
-      REG = { pk, fmc, ws, units: feed.units || [] };
+      pk.forEach(p => { const t = p.fmc ? p.fmc.ltp : p.ws[0] ? p.ws[0].ltp : null; p.lt = t; });
+      REG = { pk, fmc, ws, units: feed.units || [], days: merge(fl.filter(f => f.kind === 'fmcDays'), 'fmcDays') };
     }
     draw($('regBox'));
   } catch (e) { $('regBox').innerHTML = `<div class="panel body"><div class="inner"><b>Could not load:</b> ${esc(e.error || e.message || e)}</div></div>`; }
 };
 VIEWS.reg.clear = () => { REG = null; };
-const F = { unit: '', type: '', out: '', from: '', to: '', q: '' };
+const F = { unit: '', type: '', out: '', from: '', to: '', q: '', lt: null };
+const LTN = { main: 'Main line', loop: 'Loop lines', all: 'All lines' };
+const ltOk = (p, v) => v === 'all' || (v === 'main' ? p.lt === 'main' : v === 'loop' ? (p.lt === 'loop' || p.lt === 'siding') : v === 'unknown' ? !p.lt : true);
+const ltTagR = t => `<span class="tag ${t === 'main' ? 't3' : t ? 't2' : 't1'}">${t ? PE.LT_TAG[t] : 'type?'}</span>`;
 function draw(box) {
   const P = REG.pk; const units = [...new Set(P.map(p => p.u).filter(Boolean))].sort();
   const firstSheet = REG.fmc.map(r => r.date).sort()[0];
   if (!F.from) F.from = firstSheet ? PE.addDays(firstSheet, -1) : '';
   const types = [...new Set(P.map(p => typeKey(p.type)).filter(Boolean))].sort();
-  const view = P.filter(p => (!F.unit || p.u === F.unit) && (!F.out || p.outcome === F.out) && (!F.type || typeKey(p.type) === F.type) && (!F.from || p.date >= F.from) && (!F.to || p.date <= F.to) && (!F.q || JSON.stringify([p.type, p.lid, p.fmc && p.fmc.bs]).toLowerCase().includes(F.q.toLowerCase())));
+  if (!F.lt) F.lt = (H.ltView && H.ltView()) || 'main';
+  const view = P.filter(p => ltOk(p, F.lt) && (!F.unit || p.u === F.unit) && (!F.out || p.outcome === F.out) && (!F.type || typeKey(p.type) === F.type) && (!F.from || p.date >= F.from) && (!F.to || p.date <= F.to) && (!F.q || JSON.stringify([p.type, p.lid, p.fmc && p.fmc.bs]).toLowerCase().includes(F.q.toLowerCase())));
   const C = PE.packageCounts(view);
   const tot = k => view.filter(p => p.outcome === k).length;
   const kpi = (cls, k, l, v, s) => { const b = B(l); return `<div class="kpi ${cls}" data-out="${k}" style="cursor:pointer"><div class="l">${esc(b.p)}</div><div class="v">${v}</div><div class="s">${s}</div></div>`; };
@@ -38,19 +44,30 @@ function draw(box) {
     <select id="fT"><option value="">All work types</option>${types.map(u => `<option ${u === F.type ? 'selected' : ''}>${esc(u)}</option>`).join('')}</select>
     <select id="fO"><option value="">All outcomes</option>${Object.keys(OUT).map(k => `<option value="${k}" ${k === F.out ? 'selected' : ''}>${OUT[k][2]}</option>`).join('')}</select>
     <label class="small">from <input id="fF" type="date" value="${esc(F.from)}"></label><label class="small">to <input id="fTo" type="date" value="${esc(F.to)}"></label>
-    <input id="fQ" placeholder="search" value="${esc(F.q)}" style="width:130px"></div>
+    <input id="fQ" placeholder="search" value="${esc(F.q)}" style="width:130px">
+    <select id="fLt" aria-label="line type">${['main', 'loop', 'all', 'unknown'].map(v => `<option value="${v}" ${v === F.lt ? 'selected' : ''}>${v === 'unknown' ? 'Line type unknown' : LTN[v]}</option>`).join('')}</select></div>
+    <div class="small muted" style="margin-top:4px">Counts · ${esc(F.lt === 'unknown' ? 'line type unknown' : LTN[F.lt].toLowerCase())}</div>
+    ${F.unit ? dayStrip(F.unit) : ''}
     <details style="margin-top:6px"><summary class="small">Per unit – gaps and missing proof (${C.length} units)</summary><div class="scroll"><table class="t compact"><thead><tr><th>Unit</th><th>Packages</th><th>Matched</th><th>Sheet only (TMS gap)</th><th>TMS only (no proof)</th><th>Not checked</th><th>Sheet records lacking certificates / photos</th></tr></thead><tbody>${C.map(u => `<tr data-u="${esc(u.unit)}" style="cursor:pointer"><td><b>${esc(u.unit)}</b></td><td>${u.total}</td><td>${u.matched}</td><td>${u['sheet only'] ? `<b class="od">${u['sheet only']}</b>` : 0}</td><td>${u['tms only']}</td><td class="muted">${u['not checked']}</td><td>${u.proofMissing}</td></tr>`).join('')}</tbody></table></div></details>
-    <div class="scroll" style="margin-top:8px"><table class="t compact"><thead><tr><th>Date</th><th>Unit</th><th>Outcome</th><th>Work</th><th>Where</th><th>Sheet proof</th><th>Also here</th></tr></thead><tbody>${view.slice(0, 500).map((p, i) => `<tr data-i="${P.indexOf(p)}" style="cursor:pointer"><td class="nw">${dmy(p.date)}</td><td>${esc(p.u || '')}</td><td><span class="tag ${OUT[p.outcome][1]}">${esc(UI.t(p.outcome))}</span></td><td class="wrap">${esc(p.type || '')}${p.ws.length > 1 ? ` <span class="small muted">+${p.ws.length - 1} TMS</span>` : ''}</td><td class="small">${p.lid ? esc(p.lid) + ' ' + PE.fmtKm(p.km, p.m) + (p.approx ? ' <span class="tag t3">approx</span>' : '') : `<span class="muted">${esc(p.fmc && p.fmc.where ? p.fmc.where.note || 'not located' : 'not located')}</span>`}</td><td class="small">${p.fmc ? proofCell(p.fmc) : '<span class="od">none</span>'}</td><td class="small">${att(p)}</td></tr>`).join('')}</tbody></table></div>${view.length > 500 ? `<div class="pager">${view.length} packages – first 500 shown; narrow the filter</div>` : `<div class="pager">${view.length} package(s)</div>`}
+    <div class="scroll" style="margin-top:8px"><table class="t compact"><thead><tr><th>Date</th><th>Unit</th><th>Outcome</th><th>Work</th><th>Where</th><th>Sheet proof</th><th>Also here</th></tr></thead><tbody>${view.slice(0, 500).map((p, i) => `<tr data-i="${P.indexOf(p)}" style="cursor:pointer"><td class="nw">${dmy(p.date)}</td><td>${esc(p.u || '')}</td><td><span class="tag ${OUT[p.outcome][1]}">${esc(UI.t(p.outcome))}</span> ${ltTagR(p.lt)}</td><td class="wrap">${esc(p.type || '')}${p.ws.length > 1 ? ` <span class="small muted">+${p.ws.length - 1} TMS</span>` : ''}</td><td class="small">${p.lid ? esc(p.lid) + ' ' + PE.fmtKm(p.km, p.m) + (p.approx ? ' <span class="tag t3">approx</span>' : '') : `<span class="muted">${esc(p.fmc && p.fmc.where ? p.fmc.where.note || 'not located' : 'not located')}</span>`}</td><td class="small">${p.fmc ? proofCell(p.fmc) : '<span class="od">none</span>'}</td><td class="small">${att(p)}</td></tr>`).join('')}</tbody></table></div>${view.length > 500 ? `<div class="pager">${view.length} packages – first 500 shown; narrow the filter</div>` : `<div class="pager">${view.length} package(s)</div>`}
   </div></div>`;
   const re = () => draw(box);
   $('fU').onchange = e => { F.unit = e.target.value; re(); }; $('fT').onchange = e => { F.type = e.target.value; re(); }; $('fO').onchange = e => { F.out = e.target.value; re(); };
+  $('fLt').onchange = e => { F.lt = e.target.value; if (F.lt !== 'unknown' && H.setLtView) H.setLtView(F.lt); re(); };
   $('fF').onchange = e => { F.from = e.target.value; re(); }; $('fTo').onchange = e => { F.to = e.target.value; re(); }; $('fQ').onchange = e => { F.q = e.target.value; re(); };
   box.querySelectorAll('[data-out]').forEach(k => k.onclick = () => { F.out = k.dataset.out; re(); });
   box.querySelectorAll('tr[data-u]').forEach(r => r.onclick = () => { F.unit = r.dataset.u; re(); });
   box.querySelectorAll('tr[data-i]').forEach(r => r.onclick = () => detail(P[+r.dataset.i]));
 }
 const typeKey = t => { t = String(t || '').toLowerCase(); for (const [k, re] of [['AT / SKV welding', /weld|skv|thermit/], ['Destressing', /destress|distress|de-stress/], ['SEJ', /sej/], ['Rail renewal / change', /rail|trr|panel/], ['Machine (tamping / UTV / PQRS)', /unimat|duomatic|tamp|utv|pqrs|dtex|machine|m\/c|bcm|t\/ex/], ['Ballast / screening', /ballast|screen/], ['Sleeper', /sleeper|tsr|h\/beam/], ['Glued joint', /glue/], ['Greasing / lubrication', /greas|lubric/], ['Points & crossings', /switch|crossing|point|x-ing|lhs|turnout/]]) if (re.test(t)) return k; return t ? 'Others' : ''; };
-function proofCell(r) { const m = PE.proofMissing(r); const n = Object.keys(r.ev || {}).length; return m.length ? `${n} item(s) · <span class="od">missing ${m.length}</span>` : `${n} item(s) ✓`; }
+function proofCell(r) { const m = PE.proofMissing(r); const n = PE.proofCells(r).length - m.length; return m.length ? `${n} of ${PE.proofCells(r).length} · <span class="od">missing ${m.length}</span>` : `${n} of ${n} ✓`; }
+/** [PB] B2: the unit's days – "work reported" / "nil report" (only ----, not a problem) / "not filled" (all blank) */
+function dayStrip(u) {
+  const D = (REG.days || []).filter(d => d.u === u).sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(a.tab).localeCompare(String(b.tab))).slice(0, 60);
+  if (!D.length) return '<div class="small muted" style="margin-top:6px">Days of this unit: known from the next sheet read.</div>';
+  const cls = { 'work reported': 't3', 'nil report': 't3', 'not filled': 't1' };
+  return `<details style="margin-top:6px"><summary class="small">Days of ${esc(u)} in the sheet – work reported / nil report / not filled</summary><div class="small" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${D.map(d => `<span class="tag ${cls[d.status] || 't3'}" title="${esc(d.tab)}">${dmy(d.date)} ${d.kind}: ${esc(d.status)}</span>`).join('')}</div></details>`;
+}
 function att(p) { const a = p.att || {}; const s = []; if (a.ac.length) s.push(a.ac.length + ' asset change'); if (a.mp.length) s.push(a.mp.length + ' machine'); if (a.fw.length) s.push(a.fw.length + ' app record'); if (a.sc.length) s.push(a.sc.length + ' card compliance'); return s.join(' · ') || '—'; }
 function detail(p) {
   const r = p.fmc; const ev = r ? H.evRefs({ kind: 'sheetWork', x: r }) : '';

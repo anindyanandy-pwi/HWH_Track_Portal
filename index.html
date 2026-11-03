@@ -10,7 +10,7 @@
 <link rel="icon" href="icons/logo.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <link rel="stylesheet" media="print" onload="this.media='all'" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=Hind:wght@400;600&family=JetBrains+Mono:wght@500&display=swap">
-<link rel="stylesheet" href="styles.css?v=202611031142">
+<link rel="stylesheet" href="styles.css?v=202611031202">
 </head>
 <body>
 <header class="top">
@@ -35,22 +35,22 @@
   </main>
 </div>
 <div id="modal" class="modal hidden"><div class="modalbox"><div id="modalBody"></div><div class="modalbtns"><button id="modalCancel" class="btn secondary">Close</button><button id="modalOk" class="btn primary hidden">OK</button></div></div></div>
-<script src="config.js?v=202611031142"></script>
+<script src="config.js?v=202611031202"></script>
 <script>/* a phone / PC that opened the portal before may still hold old files (service worker copy): if the program files are of another build, clear and load once more */
-(function(){ var V='202611031142', got=(window.HWHTP_CONFIG||{}).VERSION||''; if (!/^\d{12}$/.test(V) || got===V) return;
+(function(){ var V='202611031202', got=(window.HWHTP_CONFIG||{}).VERSION||''; if (!/^\d{12}$/.test(V) || got===V) return;
   var k='hwhtp.heal.'+V; try { if (sessionStorage.getItem(k)) return; sessionStorage.setItem(k,'1'); } catch(e) {}
   var done=function(){ location.reload(); };
   try { Promise.all([ (navigator.serviceWorker && navigator.serviceWorker.getRegistrations ? navigator.serviceWorker.getRegistrations().then(function(rs){ return Promise.all(rs.map(function(r){ return r.unregister(); })); }) : Promise.resolve()),
     (window.caches ? caches.keys().then(function(ks){ return Promise.all(ks.map(function(x){ return caches.delete(x); })); }) : Promise.resolve()) ]).then(done, done); } catch(e) { done(); }
 })();</script>
-<script src="store.js?v=202611031142"></script>
-<script src="ui.js?v=202611031142"></script>
-<script src="engine.js?v=202611031142"></script>
-<script src="app.js?v=202611031142"></script>
-<script src="loc.js?v=202611031142"></script>
-<script src="register.js?v=202611031142"></script>
-<script src="admin.js?v=202611031142"></script>
-<script src="front.js?v=202611031142"></script>
+<script src="store.js?v=202611031202"></script>
+<script src="ui.js?v=202611031202"></script>
+<script src="engine.js?v=202611031202"></script>
+<script src="app.js?v=202611031202"></script>
+<script src="loc.js?v=202611031202"></script>
+<script src="register.js?v=202611031202"></script>
+<script src="admin.js?v=202611031202"></script>
+<script src="front.js?v=202611031202"></script>
 <script>
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(function () {});
 </script>

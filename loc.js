@@ -57,7 +57,7 @@ async function lineData(lid, note) {
   const want = TMS_KINDS.map(k => ({ kind: k, group: G })).concat([{ kind: 'fmc', group: '*' }, { kind: 'feed', group: '_all' }]);
   const fl = await files(want, note);
   const by = k => merge(fl, k, G);
-  const all = { ws: by('workSite'), sc: by('spotCards'), ac: by('assetChange'), mp: by('machineProg'), tr: by('trcRuns'), tq: by('tqiSix'), it: by('itms'), cond: snap(fl, 'condition', G) || [], health: snap(fl, 'health', G), feed: snap(fl, 'feed', '_all'), fmc: PE.fmcLocate(merge(fl, 'fmc'), L) };
+  const all = { ws: by('workSite'), sc: by('spotCards'), ac: by('assetChange'), mp: by('machineProg'), tr: by('trcRuns'), tq: by('tqiSix'), it: by('itms'), cond: snap(fl, 'condition', G) || [], health: snap(fl, 'health', G), feed: snap(fl, 'feed', '_all'), fmc: PE.fmcLocate(merge(fl, 'fmc').map(r => PE.fmcClean(r, H.settings())).filter(Boolean), L) };
   CACHE[G] = l => {
     const f = x => x.lid === l; const feed = all.feed || { jobs: [], work: [], units: [] };
     const tqs = all.tq.filter(f).sort((a, b) => String(b.d).localeCompare(String(a.d)));
@@ -89,7 +89,7 @@ async function showCard(box, lid, km, m) {
   const nav = d => { let K = km, c = ci + d; if (c < 0) { K--; c = 4; } if (c > 4) { K++; c = 0; } return `${lid}|${K}|${c * 200}`; };
   box.innerHTML = `
   <div class="panel body" style="margin-top:12px"><div class="inner" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-    <div style="flex:1;min-width:220px"><div class="eyebrow">${esc(lid)}${unit ? ' · ' + esc(unit.unit) + (unit.aen ? ' · ' + esc(unit.aen) : '') : ''}</div><div style="font-size:24px;font-weight:700">km ${km} / ${ci * 200}–${ci === 4 ? 'end' : ci * 200 + 200} m</div><div class="small muted">200 m stretch around ${PE.fmtKm(km, m)}${D.feedAt ? ' · TMS Control feed of ' + esc(String(D.feedAt).slice(0, 16).replace('T', ' ')) : ''}</div></div>
+    <div style="flex:1;min-width:220px"><div class="eyebrow">${(t => `<span class="tag ${t.t === 'main' ? 't3' : t.t ? 't2' : 't1'}" title="${esc(t.src)}">${esc(t.t ? PE.LT_LABEL[t.t === 'siding' ? 'loop' : t.t][0] + (t.t === 'siding' ? ' (siding)' : '') : 'Line type unknown')}</span> `)(PE.lineTypeOfLid(lid, names()))}${esc(lid)}${unit ? ' · ' + esc(unit.unit) + (unit.aen ? ' · ' + esc(unit.aen) : '') : ''}</div><div style="font-size:24px;font-weight:700">km ${km} / ${ci * 200}–${ci === 4 ? 'end' : ci * 200 + 200} m</div><div class="small muted">200 m stretch around ${PE.fmtKm(km, m)}${D.feedAt ? ' · TMS Control feed of ' + esc(String(D.feedAt).slice(0, 16).replace('T', ' ')) : ''}</div></div>
     <button class="btn secondary sm" data-k="${esc(nav(-1))}">◀ previous 200 m</button><button class="btn secondary sm" data-k="${esc(nav(1))}">next 200 m ▶</button>
   </div></div>
   <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-top:12px">

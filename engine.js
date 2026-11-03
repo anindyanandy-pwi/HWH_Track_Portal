@@ -11,6 +11,10 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
 
   /** names(settings) -> section / line / unit normalisers built from the settings' section aliases. */
   PE.names = function (S) {
+    // [PB] B2: the settings also set the placeholder words and the line-type name rules
+    if (S && S.fmc && S.fmc.placeholders && PE.setPlaceholders) PE.setPlaceholders(S.fmc.placeholders);
+    if (S && S.lineType && PE.setLineTypes) PE.setLineTypes(S.lineType);
+    if (S && S.fmc && S.fmc.proofCells && PE.setProofCells) PE.setProofCells(S.fmc.proofCells, S.fmc.proofCellsBlockOnly);
     var groups = (S && S.sections) || [];
     var MAP = {};
     groups.forEach(function (g) { g.forEach(function (a) { MAP[norm(a)] = g[0]; }); });
@@ -111,7 +115,97 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   };
   PE.noPhone = function (s) { return String(s == null ? '' : s).replace(/(\+?91[\s-]?)?\b[6-9]\d{9}\b/g, '[phone removed]'); };
   PE.stripName = function (s) { return String(s || '').replace(/\s*\([^)]*[a-z][^)]*\)\s*$/, '').trim(); };   // "JE/PW/KQU/Sec(Soumya …)" -> "JE/PW/KQU/Sec"
-  PE.empty = function (v) { var s = String(v == null ? '' : v).trim(); return !s || /^[-–—_.\s]*$/.test(s) || /^(n\.?a\.?|nil|none|no work|not applicable)$/i.test(s); };   // "---", "----", "NA", "NIL", "No work"
+  // [PB] B2: a PLACEHOLDER cell = blank, or no letter / digit at all (any dashes, dots, stars, any spacing), or a word from the settings list
+  // (settings.fmc.placeholders: NIL, N/A, No work …; any case, any spacing). PE.setPlaceholders(list) is called with the settings.
+  var PH = ['nil', 'nill', 'na', 'n/a', 'n.a.', 'none', 'no work', 'not applicable', 'no block', 'not required', 'no'];
+  var phKey = function (x) { return String(x).toLowerCase().replace(/\s+/g, ' ').replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '').trim(); };
+  var PHSET = {}; PH.forEach(function (w) { PHSET[phKey(w)] = 1; PHSET[phKey(w).replace(/[^a-z0-9]/g, '')] = 1; });
+  PE.setPlaceholders = function (list) { if (!list || !list.length) return; PHSET = {}; list.forEach(function (w) { PHSET[phKey(w)] = 1; PHSET[phKey(w).replace(/[^a-z0-9]/g, '')] = 1; }); };
+  PE.empty = function (v) {
+    var s = String(v == null ? '' : v).trim(); if (!s) return true;
+    if (!/[A-Za-z0-9\u0900-\u097F]/.test(s) && !/[^\x00-\x7F\u2010-\u2015\u2212\u2026\u00B7\u2022\uFE58\uFE63\uFF0D\uFF3F]/.test(s)) return true;   // only dashes / dots / punctuation
+    if (!/[A-Za-z0-9\u0900-\u097F]/.test(s) && /^[\s\p{P}\p{S}]*$/u.test(s)) return true;
+    var k = phKey(s); return !!(PHSET[k] || PHSET[k.replace(/[^a-z0-9]/g, '')]);
+  };
+  PE.blank = function (v) { return !String(v == null ? '' : v).trim(); };
+})(PE);
+
+
+// ===== engine/linetype.js
+// HWH Track Portal – shared engine: LINE TYPE (batch B2, 03-Nov-2026; project doc HWH_Portal_LANDING.md "Line type").
+// Every record and every stretch / yard line is MAIN (running lines of block sections + the main line through stations), LOOP (loops and
+// other yard lines) or SIDING (goods, sick, engineering and other non-running lines – counted with the loop lines, tagged "siding").
+// Only what the data carries is used; each answer names its source. What cannot be worked out is null ("line type unknown" – B7), never guessed.
+var PE = (typeof PE !== 'undefined' && PE) || {};
+(function (PE) {
+  'use strict';
+  var LT = { siding: [], loop: [], ask: [] };
+  var rx = function (a) { return (a || []).map(function (w) { return new RegExp(w, 'i'); }); };
+  /** settings.lineType: {siding: [regex…], loop: [regex…], ask: [regex…]} – ask = names the program must not decide (avoiding / fly-over lines …) */
+  PE.setLineTypes = function (o) { o = o || {}; LT = { siding: rx(o.siding), loop: rx(o.loop), ask: rx(o.ask) }; };
+  var any = function (L, s) { for (var i = 0; i < L.length; i++) if (L[i].test(s)) return L[i].source; return null; };
+  // running-line keys of a TMS section-line (core.js lineKey): UP, DN, UP1…, DN2…, Rev, Single, Up / Dn Chord, 3rd Line
+  var RUNNING = /^(UP|DN|UP\d|DN\d|REV|SL|UPCH|DNCH|3RD)$/;
+  PE.isRunningKey = function (k) { return RUNNING.test(String(k || '')); };
+  /** by a line NAME alone: {t, src} | null */
+  PE.lineTypeByName = function (name) {
+    var s = String(name || '').trim(); if (!s) return null;
+    var a = any(LT.ask, s); if (a) return { t: null, src: 'line name "' + s + '" – not decided (rule /' + a + '/ in settings.lineType.ask)' };
+    if (any(LT.siding, s)) return { t: 'siding', src: 'line name "' + s + '"' };
+    if (any(LT.loop, s)) return { t: 'loop', src: 'line name "' + s + '"' };
+    return null;
+  };
+  /** a TMS section-line id ("BLY-BDC DN", "BLY-BDC COMMON LOOP") -> {t, src} */
+  PE.lineTypeOfLid = function (lid, N) {
+    if (!lid) return { t: null, src: 'no section-line' };
+    var g = N ? N.groupOf(lid) : '_other'; var line = g && g.charAt(0) !== '_' ? String(lid).slice(g.length + 1) : String(lid).replace(/^\S+\s/, '');
+    var k = N ? N.lineKey(line) : line.toUpperCase();
+    if (PE.isRunningKey(k)) return { t: 'main', src: 'TMS section-line (running line)' };
+    var b = PE.lineTypeByName(line); if (b) return { t: b.t, src: 'TMS section-line, ' + b.src };
+    return { t: null, src: 'TMS line "' + line + '" not recognised' };
+  };
+  /** a field line text (Field Mini Control, machine progress "YD", "UP LOOP", "DN/ML", "SDG") -> {t, src} */
+  PE.lineTypeOfText = function (text, N) {
+    var s = String(text || '').trim(); if (!s || PE.empty(s)) return { t: null, src: 'line not given' };
+    var b = PE.lineTypeByName(s); if (b) return b;
+    var fl = N ? N.fieldLines(s) : []; if (fl.length) return { t: 'main', src: 'line "' + s.split('\n')[0] + '" = running line' };
+    return { t: null, src: 'line "' + s.split('\n')[0] + '" not recognised' };
+  };
+  /** one record of a stored kind -> {t, src}; cached on the record as r.ltp / r.ltps */
+  PE.lineType = function (r, kind, N) {
+    if (!r) return { t: null, src: '' };
+    if (r.ltp !== undefined) return { t: r.ltp, src: r.ltps };
+    var o;
+    if (kind === 'pnx' || r.k === 'pnx') {   // TMS asset register P&C line type ("Main Line" / "Loop Line") + the line name
+      var nm = PE.lineTypeByName(r.ln); var f = String(r.lt || '').toLowerCase();
+      o = nm && nm.t === 'siding' ? { t: 'siding', src: 'asset register "' + r.lt + '", ' + nm.src } : /main/.test(f) ? { t: 'main', src: 'asset register line type "Main Line"' } : /loop/.test(f) ? { t: 'loop', src: 'asset register line type "Loop Line"' } : nm || { t: null, src: 'asset register line type not given' };
+    } else if (kind === 'ballast' || kind === 'ballastCushion') {
+      if (r.lid) o = PE.lineTypeOfLid(r.lid, N);
+      else {
+        var y = PE.lineTypeByName(r.yl);
+        if (y) o = { t: y.t, src: 'ballast register, station ' + r.stn + ' yard, ' + y.src };
+        else if (!String(r.yl || '').trim() && r.xo) o = { t: 'loop', src: 'ballast register, station ' + r.stn + ' yard crossover ' + r.xo };
+        else if (/^\s*(line\s*no\.?\s*\d|\d+\s*$|pf\b|platform|yard\s*line|rl\s*\d|line\s*\d)/i.test(r.yl || '')) o = { t: 'loop', src: 'ballast register, station ' + r.stn + ' yard line "' + r.yl + '" (numbered yard line – not a section running line)' };
+        else o = { t: null, src: 'ballast register, station ' + r.stn + ' yard line "' + (r.yl || '') + '" not recognised' };
+      }
+    } else if (kind === 'fmc') {
+      var lt = PE.lineTypeOfText(r.line, N); var bsy = PE.lineTypeByName(r.bs);
+      o = lt.t || !bsy ? lt : { t: bsy.t, src: 'place "' + r.bs + '"' };
+      if (o.t) o.src = 'Field Mini Control ' + o.src;
+    } else if (kind === 'workSite') {
+      var k = N ? N.lineKey(r.ln) : null;
+      o = PE.isRunningKey(k) ? { t: 'main', src: 'TMS work site on section-line ' + (r.ln || '') } : (PE.lineTypeByName(r.ln) || { t: null, src: 'TMS work site line "' + (r.ln || '') + '" not recognised' });
+    } else if (kind === 'machineProg') {
+      o = PE.lineTypeOfText(r.ln, N); if (o.t) o.src = 'TMS machine progress ' + o.src;
+    } else if (r.lid) o = PE.lineTypeOfLid(r.lid, N);
+    else o = { t: null, src: 'no line given' };
+    try { r.ltp = o.t; r.ltps = o.src; } catch (e) { }
+    return o;
+  };
+  PE.LT_LABEL = { main: ['Main line', 'मुख्य लाइन'], loop: ['Loop lines', 'लूप लाइन'], all: ['All lines', 'सभी लाइन'] };
+  PE.LT_TAG = { main: 'Main', loop: 'Loop', siding: 'Siding' };
+  /** does a record of type t belong to a view ('main' | 'loop' | 'all')? unknown (null) only in "all" */
+  PE.inView = function (t, view) { return view === 'all' || (view === 'main' ? t === 'main' : view === 'loop' ? (t === 'loop' || t === 'siding') : false); };
 })(PE);
 
 
@@ -249,8 +343,8 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
 var PE = (typeof PE !== 'undefined' && PE) || {};
 (function (PE) {
   'use strict';
-  PE.KINDS = ['blockSections', 'workSite', 'spotCards', 'assetChange', 'machineProg', 'trcRuns', 'tqiSix', 'condition', 'itms', 'ballastCushion'];
-  PE.KIND_LABEL = { blockSections: 'Block sections', workSite: 'Work sites', spotCards: 'Spot attention cards', assetChange: 'Asset changes', machineProg: 'Machine progress', trcRuns: 'TRC run list', tqiSix: 'TQI six runs', condition: 'Condition layers', itms: 'ITMS runs', ballastCushion: 'Ballast cushion (asset register)', health: 'Track health (chart + GMT)' };
+  PE.KINDS = ['blockSections', 'workSite', 'spotCards', 'assetChange', 'machineProg', 'trcRuns', 'tqiSix', 'condition', 'itms', 'ballastCushion', 'tampingDue'];
+  PE.KIND_LABEL = { blockSections: 'Block sections', workSite: 'Work sites', spotCards: 'Spot attention cards', assetChange: 'Asset changes', machineProg: 'Machine progress', trcRuns: 'TRC run list', tqiSix: 'TQI six runs', condition: 'Condition layers', itms: 'ITMS runs', ballastCushion: 'Ballast cushion (asset register)', tampingDue: 'Tamping due (PML / CBML, turnouts)', health: 'Track health (chart + GMT)' };
 
   /** several part files of one press -> one object with the record arrays joined */
   PE.combineParts = function (files) {
@@ -386,6 +480,29 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       });
       extra = F.counts || {};
     }
+    else if (kind === 'tampingDue') {
+      // [PB] B2: TMS tamping due – stretches due (block section or through a station yard, on the section-line km) and turnouts (P-Xing) due,
+      // per section-line. All on TMS section-lines = main line (the yard rows are the main line through the station).
+      var col = function (row, re) { for (var k in row) if (re.test(k)) return row[k]; return ''; };
+      var num = function (v) { return v === '' || v == null ? null : +v; };
+      (R.dueStretches || []).forEach(function (g) {
+        var lid = lidOf(g.section, g.line);
+        (g.rows || []).forEach(function (x, i) {
+          var r = { id: 'tds' + g.secCode + g.lineCode + '|' + i, k: 'stretch', lid: lid, km: num(col(x, /From > km/)), m: num(col(x, /From > m/)), km2: num(col(x, /To > km/)), m2: num(col(x, /To > m/)), len: num(col(x, /Length/)),
+            yard: /yard/i.test(col(x, /Block Section \/Yard/)), stn: String(col(x, /Section\/Station/) || '').replace(/\s*\(.*$/, ''), trc: PE.isoDate(col(x, /Run Date/)) || '', last: PE.isoDate(col(x, /Tamping Date/)) || '', mc: col(x, /Machine Type/) || '' };
+          count++; put(by, lid, r); if (!lid) miss(r, 'section/line not known');
+        });
+      });
+      (R.dueTurnouts || []).forEach(function (g) {
+        var lid = lidOf(g.section, g.line);
+        (g.rows || []).forEach(function (x, i) {
+          var r = { id: 'tdt' + g.secCode + g.lineCode + '|' + col(x, /P-Xing/) + '|' + i, k: 'turnout', lid: lid, km: num(col(x, /Location > km/)), m: num(col(x, /Location > m/)), pt: String(col(x, /P-Xing/) || ''), last: PE.isoDate(col(x, /Last Tamping/)) || '', trc: PE.isoDate(col(x, /Run Date/)) || '', st: col(x, /Tamping Status/) || '' };
+          count++; put(by, lid, r); if (!lid) miss(r, 'section/line not known');
+        });
+      });
+      all = (R.summary || []).map(function (x) { return { lid: lidOf(x.section, x.line), tkm: x.tkm, pml: x.pmlDue, cbml: x.cbmlPlain, pxing: x.cbmlPxing, pred: x.prediction }; });
+      extra = F.counts || {};
+    }
     else if (kind === 'itms') {
       // ITMS press file: records.runs [{section, line, runId, run, date, kmFrom, kmTo, folder, files:[{name, rep, size}]}]; the PDFs stay on the PC
       (R.runs || F.runs || []).forEach(function (x) {
@@ -459,7 +576,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
    *  opts: {N, from (ISO, read blocks with date >= from), to, maxBlocks}  ->  {records, blocks, warnings} */
   PE.fmcParse = function (T, G, opts) {
     var N = opts.N, V = G.values || [], LK = G.links || [], IM = G.images || [], row0 = G.row0 || 1, col0 = G.col0 || 1;
-    var cols = PE.FMC_COLS[T.kind]; var blocks = PE.fmcBlocks(T, V.slice(0, 3)); var warnings = [], records = [], used = [];
+    var cols = PE.FMC_COLS[T.kind]; var blocks = PE.fmcBlocks(T, V.slice(0, 3)); var warnings = [], records = [], used = [], dayOf = {};
     var lim = opts.maxBlocks || 999;
     for (var bi = 0; bi < blocks.length && used.length < lim; bi++) {
       var B = blocks[bi];
@@ -469,6 +586,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       if (!B.ok) { warnings.push({ tab: T.tab, date: B.date, col: PE.colName(col0 + B.col), msg: 'layout changed – block not read', expected: B.bad.map(function (k) { return T.header[k]; }), found: B.bad.map(function (k) { return B.found[k]; }) }); continue; }
       used.push(B);
       var srden = '', aen = '', unit = '';
+      var WORK = (opts.workCells && opts.workCells[T.kind]) || (T.kind === 'B' ? ['purpose', 'bs', 'timing'] : ['details', 'reason', 'bs', 'loc']);
       for (var r = 3; r < V.length; r++) {
         var row = V[r] || [];
         if (String(row[0] || '').trim()) srden = String(row[0]).trim();
@@ -476,8 +594,14 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
         if (String(row[2] || '').trim()) unit = String(row[2]).trim();
         if (/^total$/i.test(String(row[2] || '').trim())) break;
         var o = {}; cols.forEach(function (k, i) { o[k] = String(row[B.col + i] == null ? '' : row[B.col + i]).trim(); });
-        var content = [o.bs, o.line, o.purpose, o.details, o.loc, o.reason].filter(function (x) { return !PE.empty(x) && !/^no work$/i.test(x); });
-        if (!content.length) continue;
+        // [PB] B2: a row is WORK only when a work-describing cell (work, place / block section / km, block time) is not a placeholder.
+        // All cells blank = "not filled"; only placeholders ("----", NIL …) = "nil report" (the unit reported no work that day).
+        var uk = N.unitKey(unit); if (!uk) continue;
+        var dk = T.kind + '|' + B.date + '|' + uk; var day = dayOf[dk] = dayOf[dk] || { tab: T.tab, kind: T.kind, date: B.date, u: uk, unitRaw: unit, aen: aen, srden: srden, status: 'not filled' };
+        var allBlank = cols.every(function (k) { return PE.blank(o[k]); }) && !(LK[r] || []).slice(B.col, B.col + cols.length).some(Boolean) && !(IM[r] || []).slice(B.col, B.col + cols.length).some(Boolean);
+        var isWork = WORK.some(function (k) { return !PE.empty(o[k]); });
+        if (isWork) day.status = 'work reported'; else if (!allBlank && day.status === 'not filled') day.status = 'nil report';
+        if (!isWork) continue;
         var cell = function (i) { return T.tab + '!' + PE.colName(col0 + B.col + i) + (row0 + r); };
         var ev = {};
         cols.forEach(function (k, i) {
@@ -497,9 +621,19 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
         records.push(rec);
       }
     }
-    return { records: records, blocks: blocks.map(function (b) { return { date: b.date, from: b.from, ok: b.ok, col: PE.colName(col0 + b.col) }; }), used: used.map(function (b) { return b.date; }), warnings: warnings };
+    return { records: records, days: Object.keys(dayOf).map(function (k) { return dayOf[k]; }), blocks: blocks.map(function (b) { return { date: b.date, from: b.from, ok: b.ok, col: PE.colName(col0 + b.col) }; }), used: used.map(function (b) { return b.date; }), warnings: warnings };
   };
 
+  /** [PB] B2: clean a STORED record again with today's placeholder rules: placeholder text -> '', placeholder proof -> missing.
+   *  Returns null when no work-describing cell is left (the row was a nil report, not work). */
+  PE.fmcClean = function (r, S) {
+    var x = Object.assign({}, r); var kind = String(r.src || '').slice(4) || (/Block/.test(r.tab || '') ? 'B' : 'W');
+    TEXTCOLS.forEach(function (k) { if (x[k] != null && PE.empty(x[k])) x[k] = ''; });
+    if (x.who && PE.empty(x.who)) x.who = '';
+    var ev = {}; Object.keys(r.ev || {}).forEach(function (k) { var e = r.ev[k]; if (e && e.t === 'text' && PE.empty(e.text)) return; ev[k] = e; }); x.ev = ev;
+    var W = (S && S.fmc && S.fmc.workCells && S.fmc.workCells[kind]) || (kind === 'B' ? ['purpose', 'bs', 'timing'] : ['details', 'reason', 'bs', 'loc']);
+    return W.some(function (k) { return !PE.empty(x[k]); }) ? x : null;
+  };
   /** counts for the admin log: exact km (km in the text / point no. / mast) · block section or station only (approx) · not placed, with reasons */
   PE.placeCounts = function (recs) {
     var o = { total: recs.length, exact: 0, exactBy: {}, approx: 0, approxBy: {}, none: 0, reasons: {} };
@@ -641,9 +775,15 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     return Object.keys(u).sort().map(function (k) { return u[k]; });
   };
   /** which certificates / photos a sheet record lacks */
+  // [PB] B2: proof cells = photos, certificates, video (block site), PDF, AEN check, greasing. A placeholder ("----", NIL, No …) = missing.
+  var PROOF = ['preImg', 'postImg', 'certSafety', 'certAgency', 'certWork', 'pdf', 'aenCheck', 'greasing'], PROOF_B = ['video'];
+  PE.setProofCells = function (a, b) { if (a && a.length) PROOF = a.slice(); if (b) PROOF_B = b.slice(); };
+  PE.proofCells = function (r) { return PROOF.concat(r && r.tab && /Block/.test(r.tab) ? PROOF_B : []); };
   PE.proofMissing = function (r) {
-    var need = ['preImg', 'postImg', 'certSafety', 'certAgency', 'certWork']; if (r.tab && /Block/.test(r.tab)) need.push('video');
-    return need.filter(function (k) { return !(r.ev && r.ev[k]); });
+    return PE.proofCells(r).filter(function (k) {
+      var e = r.ev && r.ev[k]; if (e) return e.t === 'text' && PE.empty(e.text);
+      return PE.empty(r[k]);   // text proof (AEN check, greasing)
+    });
   };
 })(PE);
 
@@ -1031,12 +1171,13 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   PE.stretches = stretches;
 
   // ---------------------------------------------------------------- the registry
+  var ltOfPk = function (p) { return p.fmc ? p.fmc.ltp : p.ws && p.ws[0] ? p.ws[0].ltp : null; };
   PE.WATCH_RULES = [];
   PE.addWatchRule = function (r) { PE.WATCH_RULES = PE.WATCH_RULES.filter(function (x) { return x.id !== r.id; }); PE.WATCH_RULES.push(r); return r; };
   var R = PE.addWatchRule;
 
   // B1 – not recorded: no TRC run over the 200 m within settings.watch.trcDays (OMS later)
-  R({ id: 'B1', group: 'B', en: 'Not recorded', hi: 'रिकॉर्डिंग नहीं हुई', rule: 'No TRC run over the 200 m within the schedule (OMS added when its run list is loaded)', needs: ['trcRuns', 'health'], later: ['omsRuns'], thresholds: ['trcDays'], unitText: 'stretches',
+  R({ id: 'B1', group: 'B', views: ['main', 'all'], en: 'Not recorded', hi: 'रिकॉर्डिंग नहीं हुई', rule: 'No TRC run over the 200 m within the schedule (OMS added when its run list is loaded)', needs: ['trcRuns', 'health'], later: ['omsRuns'], thresholds: ['trcDays'], unitText: 'stretches',
     run: function (X) {
       var W = X.W, today = X.today; var last = {}, all = {};
       X.trc.forEach(function (r) { PE.cellsOf(X.C, r.lid, r.km, r.m, r.km2, r.m2).forEach(function (c) { (all[c.key] = all[c.key] || []).push(r.d); if (!last[c.key] || r.d > last[c.key]) last[c.key] = r.d; }); });
@@ -1060,18 +1201,18 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   R({ id: 'B4', group: 'B', en: 'Done, not in TMS', hi: 'कार्य हुआ, TMS में नहीं', rule: 'Field Mini Control work with proof, no matching TMS work site (date ± 1 day, unit, line, km)', needs: ['fmc', 'workSite'], thresholds: [], unitText: 'works',
     run: function (X) {
       var L = X.pk.filter(function (p) { return p.outcome === 'sheet only'; });
-      return { records: L.map(function (p) { return { lid: p.lid, km: p.km, m: p.m, approx: p.approx, unit: p.u, d: p.date, text: (p.type || 'work') + ' – ' + (p.fmc && p.fmc.bs || '') + ' ' + (p.fmc && p.fmc.line || '') + ' – in Field Mini Control, not in TMS work sites', go: { view: 'reg', arg: 'sheet only' } }; }), count: L.length, unitOf: function (r) { return r.unit; },
+      return { records: L.map(function (p) { return { lid: p.lid, km: p.km, m: p.m, approx: p.approx, unit: p.u, d: p.date, lt: ltOfPk(p), text: (p.type || 'work') + ' – ' + (p.fmc && p.fmc.bs || '') + ' ' + (p.fmc && p.fmc.line || '') + ' – in Field Mini Control, not in TMS work sites', go: { view: 'reg', arg: 'sheet only' } }; }), count: L.length, unitOf: function (r) { return r.unit; },
         monthly: lastMonths(X.today, 12).map(function (ym) { return [ym, X.fmcCovered[ym] ? L.filter(function (p) { return monthOf(p.date) === ym; }).length : null]; }), dataOf: ['fmc', 'tms'] };
     } });
   // B5 – in TMS, no proof
   R({ id: 'B5', group: 'B', en: 'In TMS, no proof', hi: 'TMS में, प्रमाण नहीं', rule: 'TMS work site with no Field Mini Control proof, or proof without certificates / photos', needs: ['fmc', 'workSite'], thresholds: [], unitText: 'work sites',
     run: function (X) {
       var L = X.pk.filter(function (p) { return p.outcome === 'tms only' || (p.outcome === 'matched' && PE.proofMissing(p.fmc).length); });
-      return { records: L.map(function (p) { return { lid: p.lid, km: p.km, m: p.m, unit: p.u, d: p.date, text: (p.type || '') + (p.outcome === 'tms only' ? ' – no sheet proof' : ' – missing ' + PE.proofMissing(p.fmc).join(', ')), go: { view: 'reg', arg: p.outcome } }; }), count: L.length, unitOf: function (r) { return r.unit; },
+      return { records: L.map(function (p) { return { lid: p.lid, km: p.km, m: p.m, unit: p.u, d: p.date, lt: ltOfPk(p), text: (p.type || '') + (p.outcome === 'tms only' ? ' – no sheet proof' : ' – missing ' + PE.proofMissing(p.fmc).join(', ')), go: { view: 'reg', arg: p.outcome } }; }), count: L.length, unitOf: function (r) { return r.unit; },
         monthly: lastMonths(X.today, 12).map(function (ym) { return [ym, X.fmcCovered[ym] ? L.filter(function (p) { return monthOf(p.date) === ym; }).length : null]; }), dataOf: ['fmc', 'tms'] };
     } });
   // B6 – bad but untouched
-  R({ id: 'B6', group: 'B', en: 'Bad but untouched', hi: 'खराब, पर कोई कार्यवाही नहीं', rule: 'TMS track geometry index of the km below the limit, and in 12 months no card, no work, no open job / plan in the 200 m', needs: ['health', 'spotCards'], thresholds: ['b6TgiBelow', 'b6Months'], unitText: 'stretches',
+  R({ id: 'B6', group: 'B', views: ['main', 'all'], en: 'Bad but untouched', hi: 'खराब, पर कोई कार्यवाही नहीं', rule: 'TMS track geometry index of the km below the limit, and in 12 months no card, no work, no open job / plan in the 200 m', needs: ['health', 'spotCards'], thresholds: ['b6TgiBelow', 'b6Months'], unitText: 'stretches',
     run: function (X) {
       var W = X.W, since = PE.addDays(X.today, -Math.round(W.b6Months * 30.4)); var touched = {};
       X.cards.forEach(function (c) { if ((c.d || '') >= since || c.st === 'open') PE.cellsOf(X.C, c.lid, c.km, c.m).forEach(function (x) { touched[x.key] = 1; }); });
@@ -1081,16 +1222,27 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       return { cells: bad, records: stretches(bad).map(function (s) { var c = X.C.byKey[s.lid + '|' + s.km + '|' + (s.m / 200)]; s.text = 'TMS TGI ' + (c && c.tgi ? c.tgi[0][0] + ' (run ' + (c.tgi[0][1] || '?') + ')' : '?') + ' – no card, no work, no plan in ' + W.b6Months + ' months'; return s; }), snapshot: true, dataOf: ['tms'] };
     } });
   // B7 – data missing
-  R({ id: 'B7', group: 'B', en: 'Data missing', hi: 'डेटा उपलब्ध नहीं', rule: 'Linear data missing in TMS, or clean ballast cushion 0 / blank in the TMS ballast register (records not placed to km: listed in the admin sheet read)', needs: ['condition'], later: ['ballastCushion'], thresholds: [], unitText: 'stretches',
+  R({ id: 'B7', group: 'B', en: 'Data missing', hi: 'डेटा उपलब्ध नहीं', rule: 'Linear data missing in TMS; ballast register: clean cushion 0 / blank, clean > total, clean = total = 50 (cm?), low cushion without screening date; line type unknown; Field Mini Control "not filled" days', needs: ['condition'], later: ['ballastCushion'], thresholds: [], unitText: 'items',
     run: function (X) {
       var miss = {}, why = {}; X.cond.filter(function (c) { return c.k === 'missing'; }).forEach(function (c) { PE.cellsOf(X.C, c.lid, c.km, c.m, c.km2, c.m2).forEach(function (x) { miss[x.key] = x; why[x.key] = 'TMS: linear data missing'; }); });
-      // [PB] B1a: clean cushion 0 or blank = data missing, never "deep screening needed"
-      var bm = X.ballast.filter(function (b) { return !(b.cc > 0); }); var yard = [];
-      bm.forEach(function (b) { if (!b.lid) { yard.push(b); return; } PE.cellsOf(X.C, b.lid, b.km, b.m, b.km2, b.m2).forEach(function (x) { if (!miss[x.key]) why[x.key] = 'TMS ballast register: clean cushion ' + (b.cc === 0 ? '0' : 'blank') + (b.scr ? ' (screened ' + b.scr + ')' : ''); miss[x.key] = x; }); });
+      // ballast register data quality ([PB] B1a / B2): 0 or blank = data missing, never "deep screening needed"
+      var other = [];
+      var place = function (b) { return b.lid ? null : b.stn + ' yard, ' + (b.yl || 'line ?') + ' ' + PE.fmtKm(b.km, b.m) + '–' + PE.fmtKm(b.km2, b.m2); };
+      var add = function (b, txt) { other.push({ lid: b.lid, km: b.lid ? b.km : null, m: b.m, km2: b.lid ? b.km2 : null, m2: b.m2, where: place(b), unit: b.unit || '', lt: b.ltp, len: b.len, q: txt, text: (place(b) ? place(b) + ': ' : '') + txt + ' – TMS ballast register' }); };
+      X.ballast.forEach(function (b) {
+        if (!(b.cc > 0)) add(b, 'clean cushion ' + (b.cc === 0 ? '0' : 'blank') + (b.scr ? ' (screened ' + b.scr + ')' : ''));
+        else if (b.tc > 0 && b.cc > b.tc) add(b, 'clean cushion ' + b.cc + ' mm more than total ' + b.tc + ' mm');
+        else if (b.cc === 50 && b.tc === 50) add(b, 'clean = total = 50 – possibly entered in cm, left out of deep screening until checked');
+        else if (b.low && !b.scr) add(b, 'clean cushion ' + b.cc + ' mm, screening date missing in TMS');
+      });
+      // line type unknown (never put in Main or Loop)
+      (X.unknown || []).forEach(function (u) { other.push({ lid: u.lid || null, km: u.km, m: u.m, where: u.where || null, unit: u.unit || '', lt: null, q: 'line type unknown', text: 'line type unknown – ' + u.kind + ': ' + u.why }); });
+      // Field Mini Control: unit did not fill the sheet that day (nil reports are not a problem)
+      (X.days || []).filter(function (d) { return d.status === 'not filled'; }).forEach(function (d) { other.push({ unit: d.u, lt: null, d: d.date, q: 'sheet not filled', text: d.u + ' – ' + d.tab + ' ' + d.date + ': not filled (all cells blank)' }); });
       var cells = Object.keys(miss).map(function (k) { return miss[k]; });
-      var recs = stretches(cells).map(function (s) { s.text = why[s.lid + '|' + s.km + '|' + (s.m / 200)] || 'data missing'; return s; })
-        .concat(yard.map(function (b) { return { stn: b.stn, yl: b.yl, unit: b.unit || '', len: b.len, text: b.stn + ' yard, ' + (b.yl || 'line ?') + ' ' + PE.fmtKm(b.km, b.m) + '–' + PE.fmtKm(b.km2, b.m2) + ': clean cushion ' + (b.cc === 0 ? '0' : 'blank') + ' in the TMS ballast register' }; }));
-      return { cells: cells, records: recs, extra: { notPlaced: X.notPlaced, cushionMissing: bm.length, cushionMissingYard: yard.length }, note: X.has.ballastCushion ? bm.length + ' ballast register stretches with clean cushion 0 / blank (' + yard.length + ' in station yards)' : '', snapshot: true, dataOf: ['tms', 'fmc'] };
+      var recs = stretches(cells).map(function (s) { s.text = why[s.lid + '|' + s.km + '|' + (s.m / 200)] || 'data missing'; s.lt = 'main'; return s; }).concat(other);
+      var q = {}; other.forEach(function (o) { q[o.q] = (q[o.q] || 0) + 1; });
+      return { records: recs, count: cells.length + other.length, unitItems: cells.concat(other), extra: { notPlaced: X.notPlaced, byKind: q, linearCells: cells.length }, note: Object.keys(q).map(function (k) { return q[k] + ' ' + k; }).join(' · '), snapshot: true, dataOf: ['tms', 'fmc'] };
     } });
   // H1 – repeat, never fixed
   R({ id: 'H1', group: 'H', en: 'Repeat, never fixed', hi: 'बार-बार, कभी ठीक नहीं', rule: 'Same 200 m gets cards again and again in 12 months, each one closed', needs: ['spotCards'], thresholds: ['repeatCards', 'repeatMonths'], src: ['Spot cards', 'TMS work', 'Machine days', 'Field sheet'],
@@ -1110,7 +1262,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       return { records: out, count: out.length, unitOf: function (r) { return r.unit; }, dataOf: ['tms'] };
     } });
   // H2 – work didn't improve (TMS TGI per km: run before vs run after an exactly placed work)
-  R({ id: 'H2', group: 'H', en: 'Work didn\'t improve', hi: 'कार्य से सुधार नहीं', rule: 'Exactly placed work, but TMS\'s TGI of the km on the next run is not better than the run before (TGI: higher = better)', needs: ['health'], thresholds: ['h2WindowDays', 'h2MinGain'], src: ['Work (exact km)', 'TRC before / after'],
+  R({ id: 'H2', group: 'H', views: ['main', 'all'], en: 'Work didn\'t improve', hi: 'कार्य से सुधार नहीं', rule: 'Exactly placed work, but TMS\'s TGI of the km on the next run is not better than the run before (TGI: higher = better)', needs: ['health'], thresholds: ['h2WindowDays', 'h2MinGain'], src: ['Work (exact km)', 'TRC before / after'],
     run: function (X) {
       var W = X.W, out = [], seen = {};
       X.work.forEach(function (w) {
@@ -1128,7 +1280,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       return { records: out, count: out.length, unitOf: function (r) { return r.unit; }, monthly: lastMonths(X.today, 12).map(function (ym) { return [ym, out.filter(function (r) { return monthOf(r.d) === ym; }).length]; }), dataOf: ['tms'] };
     } });
   // H3 – defect, no card
-  R({ id: 'H3', group: 'H', en: 'Defect, no card', hi: 'दोष, कार्ड नहीं', rule: 'ITMS / TRC exception at a place with no spot card', needs: ['itmsDefects'], thresholds: [], src: ['ITMS reports', 'Spot cards'] });
+  R({ id: 'H3', group: 'H', views: ['main', 'all'], en: 'Defect, no card', hi: 'दोष, कार्ड नहीं', rule: 'ITMS / TRC exception at a place with no spot card (iTMS wear summaries: line level only, never a 200 m stretch)', needs: ['itmsDefects'], thresholds: [], src: ['ITMS reports', 'Spot cards'] });
   // H4 – paper before work
   R({ id: 'H4', group: 'H', en: 'Paper before work', hi: 'कार्य से पहले कागज़', rule: 'Card complied on a day with no TMS work site, machine day, app record or sheet work at that place (gang work not loaded yet)', needs: ['spotCards', 'workSite'], later: ['gangWork'], thresholds: [], src: ['Spot cards', 'TMS work', 'Machine days', 'Field sheet'],
     run: function (X) {
@@ -1160,20 +1312,31 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       return { records: out, count: out.length, unitOf: function (r) { return r.unit; }, dataOf: ['tms'] };
     } });
   // H6 – season pattern
-  R({ id: 'H6', group: 'H', en: 'Season pattern', hi: 'मौसमी स्वरूप', rule: 'Bad every monsoon, recovers in winter – from TQI history since 2019 and water logging', needs: ['tqiHistory'], later: ['waterLogging'], thresholds: [], src: ['TQI history', 'Water logging'] });
+  R({ id: 'H6', group: 'H', views: ['main', 'all'], en: 'Season pattern', hi: 'मौसमी स्वरूप', rule: 'Bad every monsoon, recovers in winter – from TQI history since 2019 and water logging', needs: ['tqiHistory'], later: ['waterLogging'], thresholds: [], src: ['TQI history', 'Water logging'] });
   // needs-action tiles (A)
-  R({ id: 'A1', group: 'A', en: 'Deep screening needed', hi: 'डीप स्क्रीनिंग आवश्यक', rule: 'Clean ballast cushion above 0 and below rules.cleanCushionMm in the TMS ballast register (0 / blank = data missing, B7)', needs: ['ballastCushion'], thresholds: [], unitText: 'stretches',
+  R({ id: 'A1', group: 'A', en: 'Deep screening needed', hi: 'डीप स्क्रीनिंग आवश्यक', rule: 'TMS ballast register: urgent = clean cushion < rules.byLineType.*.cushionUrgentMm (100), plan = up to < cleanCushionMm (150); 0 / blank and suspect values = B7', needs: ['ballastCushion'], thresholds: [], unitText: 'stretches',
     run: function (X) {
-      var lim = (X.S.rules && X.S.rules.cleanCushionMm) || 150;
-      var L = X.ballast.filter(function (b) { return b.cc > 0 && b.cc < lim; }).sort(function (a, b) { return a.cc - b.cc; });
-      var km = Math.round(L.reduce(function (a, b) { return a + (+b.len || 0); }, 0) * 10) / 10;
+      var L = X.ballast.filter(function (b) { return b.low && !(b.cc === 50 && b.tc === 50); }).sort(function (a, b) { return a.cc - b.cc; });
+      var sum = function (A) { return Math.round(A.reduce(function (a, b) { return a + (+b.len || 0); }, 0) * 10) / 10; };
+      var U = L.filter(function (b) { return b.grade === 'urgent'; }), Pn = L.filter(function (b) { return b.grade === 'plan'; });
       return { records: L.map(function (b) {
           var where = b.lid ? null : b.stn + ' yard, ' + (b.yl || 'line ?') + (b.xo ? ' x-over ' + b.xo : '');
-          return { lid: b.lid, km: b.lid ? b.km : null, m: b.m, km2: b.lid ? b.km2 : null, m2: b.m2, where: where, unit: b.unit || '', cc: b.cc, scr: b.scr, len: b.len,
-            text: (where ? where + ' ' + PE.fmtKm(b.km, b.m) + '–' + PE.fmtKm(b.km2, b.m2) + ': ' : '') + 'clean cushion ' + b.cc + ' mm' + (b.tc != null ? ' (total ' + b.tc + ')' : '') + ' · deep screened ' + (b.scr || 'month not given') + (b.how ? ' (' + b.how + ')' : '') + ' · source: TMS ballast register' };
-        }), count: L.length, kmTotal: km, unitOf: function (r) { return r.unit; }, note: (X.W.ballastNote || '') + (X.W.ballastNote ? ' · ' : '') + km + ' km below ' + lim + ' mm', snapshot: true, dataOf: ['tms'] };
+          return { lid: b.lid, km: b.lid ? b.km : null, m: b.m, km2: b.lid ? b.km2 : null, m2: b.m2, where: where, unit: b.unit || '', lt: b.ltp, cc: b.cc, scr: b.scr, len: b.len, grade: b.grade,
+            text: (b.grade === 'urgent' ? 'URGENT · ' : 'plan · ') + (where ? where + ' ' + PE.fmtKm(b.km, b.m) + '–' + PE.fmtKm(b.km2, b.m2) + ': ' : '') + 'clean cushion ' + b.cc + ' mm' + (b.tc != null ? ' (total ' + b.tc + ')' : '') + ' · ' + (b.scr ? 'deep screened ' + b.scr + (b.how ? ' (' + b.how + ')' : '') : 'screening date missing in TMS') + (b.tc > 0 && b.cc > b.tc ? ' · clean > total – check' : '') + ' · source: TMS ballast register' };
+        }), count: L.length, kmTotal: sum(L), extra: { urgent: U.length, plan: Pn.length, urgentKm: sum(U), planKm: sum(Pn), byUnit: L.reduce(function (o, b) { var u = b.unit || '?'; var x = o[u] = o[u] || { urgent: 0, plan: 0 }; x[b.grade]++; return o; }, {}) }, unitOf: function (r) { return r.unit; },
+        note: (X.W.ballastNote ? X.W.ballastNote + ' · ' : '') + U.length + ' urgent (' + sum(U) + ' km) · ' + Pn.length + ' plan (' + sum(Pn) + ' km)', snapshot: true, dataOf: ['tms'] };
     } });
-  R({ id: 'A2', group: 'A', en: 'Tamping due', hi: 'टैम्पिंग देय', rule: 'TMS tamping due (PML / CBML) list', needs: ['tampingDue'], thresholds: [] });
+  R({ id: 'A2', group: 'A', views: ['main', 'all'], en: 'Tamping due', hi: 'टैम्पिंग देय', rule: 'TMS tamping due list (PML / CBML from TRC / TQI): stretches due + turnouts on the main line', needs: ['tampingDue'], thresholds: [], unitText: 'stretches',
+    run: function (X) {
+      var S2 = X.tamping.filter(function (t) { return t.k === 'stretch'; }), T2 = X.tamping.filter(function (t) { return t.k === 'turnout' && !/done/i.test(t.st || ''); });
+      var km = Math.round(S2.reduce(function (a, b) { return a + (+b.len || 0); }, 0) * 10) / 10;
+      var unitAt = function (t) { var cs = PE.cellsOf(X.Cu, t.lid, t.km, t.m); return cs[0] ? cs[0].unit : ''; };
+      var recs = S2.map(function (t) { return { lid: t.lid, km: t.km, m: t.m, km2: t.km2, m2: t.m2, unit: unitAt(t), lt: 'main', len: t.len, text: 'due ' + (t.yard ? 'through ' + t.stn + ' yard' : 'block section') + ' · last tamping ' + (t.last || '—') + (t.mc ? ' (' + t.mc + ')' : '') + ' · TRC ' + (t.trc || '—') }; })
+        .concat(T2.map(function (t) { return { lid: t.lid, km: t.km, m: t.m, unit: unitAt(t), lt: 'main', turnout: 1, text: 'turnout ' + t.pt + ' due · last tamping ' + (t.last || '—') }; }));
+      return { records: recs, count: S2.length, kmTotal: km, unitItems: S2.map(function (t, i) { return recs[i]; }), extra: { turnouts: T2.length, stretches: S2.length, km: km }, note: S2.length + ' stretches (' + km + ' km) · ' + T2.length + ' turnouts on the main line due', snapshot: true, dataOf: ['tms'] };
+    } });
+  R({ id: 'A2L', group: 'A', views: ['loop'], en: 'Turnouts due tamping', hi: 'टर्नआउट टैम्पिंग देय', rule: 'Loop-line turnouts due tamping – TMS\'s tamping list names turnouts by section-line only', needs: ['loopTurnoutsDue'], thresholds: [] });
+  R({ id: 'T1', group: 'T', views: ['main', 'all'], en: 'iTMS rail wear', hi: 'iTMS रेल घिसाव', rule: 'Lip flow / vertical / lateral wear: metres over each threshold, left and right rail, per line and run – line level only, never on a 200 m stretch', needs: ['itmsWear'], thresholds: [] });
   R({ id: 'A3', group: 'A', en: 'Open P1 / P2 spot cards', hi: 'खुले P1 / P2 कार्ड', rule: 'Spot cards of priority 1 or 2 still open in TMS', needs: ['spotCards'], thresholds: [],
     run: function (X) {
       var L = X.cards.filter(function (c) { return c.st === 'open' && (+c.p === 1 || +c.p === 2); });
@@ -1181,12 +1344,12 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       return { records: L.map(function (c) { return { lid: c.lid, km: c.km, m: c.m, unit: c.u, d: c.d, p: +c.p, text: 'P' + c.p + ' ' + c.src + ': ' + c.ob, id: c.id }; }), count: L.length, unitOf: function (r) { return r.unit; },
         monthly: months.map(function (ym) { var e = monthEnd(ym); return [ym, X.cards.filter(function (c) { return (+c.p === 1 || +c.p === 2) && c.d && c.d <= e && (c.st === 'open' || (c.d16 && c.d16 > e)); }).length]; }), dataOf: ['tms'] };
     } });
-  R({ id: 'A4', group: 'A', en: 'Work that didn\'t hold', hi: 'कार्य जो टिका नहीं', rule: 'Same as H2: exact work with no TGI gain on the next run', needs: ['health'], thresholds: [],
+  R({ id: 'A4', group: 'A', views: ['main', 'all'], en: 'Work that didn\'t hold', hi: 'कार्य जो टिका नहीं', rule: 'Same as H2: exact work with no TGI gain on the next run', needs: ['health'], thresholds: [],
     run: function (X) { var h = X.results.H2 || { records: [] }; return { records: h.records, count: h.records.length, unitOf: function (r) { return r.unit; }, monthly: h.monthly, dataOf: ['tms'] }; } });
 
   // ---------------------------------------------------------------- run everything
   /** D: {S, today, health:[groups], units, trc, cards, ws, fmc (located), feedWork, jobs, acRecent, mpRecent, cond, itms, loaded, fmcCoverage, dataAt:{tms, fmc, feed}, prev (previous watch file)} */
-  PE.computeWatch = function (D) {
+  PE.computeView = function (D) {
     var S = D.S || {}, W = Object.assign({}, S.watch || {}), today = D.today;
     var C = PE.watchCells(D.health, D.units);
     var has = {}; Object.keys(D.has || {}).forEach(function (k) { if (D.has[k]) has[k] = 1; });
@@ -1201,16 +1364,23 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     var cards = (D.cards || []).filter(function (c) { return c.lid && c.km != null; });
     var withDet = cards.filter(function (c) { return c.act !== undefined; }).length;
     // a 200 m stretch outside the feed's unit map takes the unit TMS itself names most often on that km (spot cards, work sites)
-    var vote = {}; cards.concat(D.ws || []).forEach(function (r) { if (!r.u || !r.lid || r.km == null) return; var k = r.lid + '|' + r.km; var o = vote[k] = vote[k] || {}; o[r.u] = (o[r.u] || 0) + 1; });
-    var aenOf = {}; (D.ws || []).forEach(function (w) { if (w.u && w.aen) aenOf[w.u] = PE.desig(w.aen) || w.aen; }); (D.units || []).forEach(function (u) { if (u.unit && u.aen) aenOf[u.unit] = u.aen; });
+    var vote = {}; (D.voteCards || cards).concat(D.voteWs || D.ws || []).forEach(function (r) { if (!r.u || !r.lid || r.km == null) return; var k = r.lid + '|' + r.km; var o = vote[k] = vote[k] || {}; o[r.u] = (o[r.u] || 0) + 1; });
+    var aenOf = {}; (D.voteWs || D.ws || []).forEach(function (w) { if (w.u && w.aen) aenOf[w.u] = PE.desig(w.aen) || w.aen; }); (D.units || []).forEach(function (u) { if (u.unit && u.aen) aenOf[u.unit] = u.aen; });
     C.list.forEach(function (c) { if (c.unit) return; var o = vote[c.lid + '|' + c.km]; if (!o) { for (var d = 1; d <= 3 && !o; d++) o = vote[c.lid + '|' + (c.km - d)] || vote[c.lid + '|' + (c.km + d)]; } if (!o) return; c.unit = Object.keys(o).sort(function (a, b) { return o[b] - o[a]; })[0]; c.aen = aenOf[c.unit] || ''; c.unitBy = 'tms'; });
+    var Cu = C; if (D.view === 'loop') C = { list: [], byKey: {}, byLid: {} };   // [PB] B2: no 200 m chart stretches on loop lines; the main cells still give the units
     var pk = PE.buildPackages(D.fmc || [], D.ws || [], { ac: D.acRecent || [], mp: D.mpRecent || [], fw: D.feedWork || [], sc: [] }, { S: S, N: D.N, coverage: D.fmcCoverage || {} });
     var fmcCovered = {}; Object.keys(D.fmcCoverage || {}).forEach(function (d) { fmcCovered[monthOf(d)] = 1; });
-    var X = { S: S, W: W, today: today, C: C, has: has, trc: D.trc || [], cards: cards, detailShare: cards.length ? withDet / cards.length : 0, work: work, pk: pk, jobs: D.jobs || [], cond: D.cond || [], ballast: [], fmcCovered: fmcCovered, notPlaced: D.notPlaced || {}, results: {} };
+    var X = { view: D.view || 'all', Cu: Cu, unknown: D.unknown || [], days: D.days || [], tamping: D.tamping || [], S: S, W: W, today: today, C: C, has: has, trc: D.trc || [], cards: cards, detailShare: cards.length ? withDet / cards.length : 0, work: work, pk: pk, jobs: D.jobs || [], cond: D.cond || [], ballast: [], fmcCovered: fmcCovered, notPlaced: D.notPlaced || {}, results: {} };
     // [PB] B1a: ballast register stretches with their unit (running line: the unit of the first 200 m; station yard: the station's unit given by the page)
-    X.ballast = (D.ballast || []).map(function (b) { var o = Object.assign({}, b); if (b.lid) { var cs = PE.cellsOf(C, b.lid, b.km, b.m, b.km2, b.m2); o.unit = cs[0] ? cs[0].unit : ''; } else { var p = (D.stnPlace || {})[b.stn]; var c2 = p ? PE.cellsOf(C, p.lid, p.km, p.m) : []; o.unit = c2[0] ? c2[0].unit : ''; } return o; });
+    var BT = (S.rules && S.rules.byLineType) || {};
+    X.ballast = (D.ballast || []).map(function (b) {
+      var o = Object.assign({}, b); if (b.lid) { var cs = PE.cellsOf(Cu, b.lid, b.km, b.m, b.km2, b.m2); o.unit = cs[0] ? cs[0].unit : ''; } else { var p = (D.stnPlace || {})[b.stn]; var c2 = p ? PE.cellsOf(Cu, p.lid, p.km, p.m) : []; o.unit = c2[0] ? c2[0].unit : ''; }
+      var th = BT[b.ltp === 'main' ? 'main' : 'loop'] || {}; var plan = th.cleanCushionMm || (S.rules && S.rules.cleanCushionMm) || 150, urg = th.cushionUrgentMm || 100;
+      o.low = b.cc > 0 && b.cc < plan; o.grade = !o.low ? null : b.cc < urg ? 'urgent' : 'plan'; return o;
+    });
     var out = { v: 1, computedAt: D.now || new Date().toISOString(), today: today, dataAt: D.dataAt || {}, freshDays: W.freshDays || {}, cells: C.list.length, rules: [], units: {}, lines: [] };
     PE.WATCH_RULES.forEach(function (r) {
+      if (r.views && D.view && r.views.indexOf(D.view) < 0) return;   // [PB] B2: TRC / TQI / ITMS rules run on the main line only
       var miss = (r.needs || []).filter(function (k) { return !has[k]; });
       var e = { id: r.id, group: r.group, en: r.en, hi: r.hi, rule: r.rule, needs: r.needs, later: r.later || [], thresholds: (r.thresholds || []).map(function (k) { return [k, W[k]]; }), src: r.src || [], unitText: r.unitText || '', status: !r.run ? 'waiting' : miss.length ? 'waiting' : 'ready', missing: !r.run && !miss.length ? (r.needs || []) : miss };
       if (e.status === 'ready') {
@@ -1219,8 +1389,9 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
           var recs = res.records || [];
           e.count = res.cells ? res.cells.length : (res.count != null ? res.count : recs.length);
           e.km = res.cells ? Math.round(res.cells.length * 0.2 * 10) / 10 : (res.kmTotal != null ? res.kmTotal : null);
-          e.byUnit = {}; (res.cells || recs).forEach(function (x) { var u = x.unit || '?'; e.byUnit[u] = (e.byUnit[u] || 0) + (res.cells ? 1 : (x.n && r.id === 'H4' ? x.n : 1)); });
+          e.byUnit = {}; (res.unitItems || res.cells || recs).forEach(function (x) { var u = x.unit || '?'; e.byUnit[u] = (e.byUnit[u] || 0) + (res.cells ? 1 : (x.n && r.id === 'H4' ? x.n : 1)); });
           if (r.id === 'H4') e.count = res.count;
+          recs.forEach(function (x) { if (x.lt === undefined) x.lt = x.lid ? PE.lineTypeOfLid(x.lid, D.N).t : null; });
           e.records = recs.slice(0, W.maxRecords || 400); e.more = Math.max(0, recs.length - e.records.length);
           e.monthly = res.monthly || null; e.snapshot = !!res.snapshot; e.note = res.note || ''; e.extra = res.extra || null; e.dataOf = res.dataOf || ['tms'];
         } catch (err) { e.status = 'error'; e.error = String(err && err.message || err); }
@@ -1257,6 +1428,14 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     var itmsLast = {}; (D.itms || []).forEach(function (r) { if (r.lid && (!itmsLast[r.lid] || r.d > itmsLast[r.lid])) itmsLast[r.lid] = r.d; });
     pk.forEach(function (p) { if (!p.lid || !lineRows[p.lid] || p.outcome === 'not checked') return; var o = lineRows[p.lid]; if (p.fmc) { o.proofN = (o.proofN || 0) + 1; if (!PE.proofMissing(p.fmc).length) o.proofOk = (o.proofOk || 0) + 1; } if (p.outcome === 'sheet only') o.gaps = (o.gaps || 0) + 1; });
     out.lines = Object.keys(lineRows).sort().map(function (k) { var o = lineRows[k]; return { lid: k, units: Object.keys(o.units), cells: o.cells, trc: o.never ? { never: true, n: o.never } : { d: o.worstTrc, days: o.worstTrc ? PE.daysBetween(o.worstTrc, today) : null }, itms: itmsLast[k] ? { d: itmsLast[k], days: PE.daysBetween(itmsLast[k], today) } : null, proof: o.proofN ? Math.round((o.proofOk || 0) / o.proofN * 100) : null, gaps: o.gaps || 0 }; });
+    if (D.view === 'loop') {   // [PB] B2: loop view – one row per station yard: cushion data, cards, work proof, TMS entry (no TRC / ITMS on loops)
+      var st = {}; var row = function (k) { return st[k] = st[k] || { lid: k + ' yard', stn: k, units: {}, n: 0, measured: 0, km: 0, proofN: 0, proofOk: 0, gaps: 0, cards: 0 }; };
+      X.ballast.forEach(function (b) { if (b.lid || !b.stn) return; var o = row(b.stn); o.n++; o.km += +b.len || 0; if (b.cc > 0) o.measured++; if (b.unit) o.units[b.unit] = 1; });
+      pk.forEach(function (p) { if (!p.fmc || p.outcome === 'not checked') return; var k = String(p.fmc.bs || '').toUpperCase().split(/[\s\-\/.]/)[0]; if (!k) return; var o = row(k); o.proofN++; if (!PE.proofMissing(p.fmc).length) o.proofOk++; if (p.outcome === 'sheet only') o.gaps++; if (p.u) o.units[p.u] = 1; });
+      out.lines = Object.keys(st).sort().map(function (k) { var o = st[k]; return { lid: o.lid, loop: true, units: Object.keys(o.units), cells: o.n, km: Math.round(o.km * 10) / 10, cushion: o.n ? { n: o.n, measured: o.measured, pct: Math.round(o.measured / o.n * 100) } : null, proof: o.proofN ? Math.round(o.proofOk / o.proofN * 100) : null, gaps: o.gaps }; });
+      var yl = X.ballast.filter(function (b) { return !b.lid; });
+      out.coverage = { loop: true, yardStretches: yl.length, km: Math.round(yl.reduce(function (a, b) { return a + (+b.len || 0); }, 0)), measured: yl.filter(function (b) { return b.cc > 0; }).length, basis: 'loop lines are judged on inspections (not loaded yet), cushion data, spot cards, work proof and TMS entry – no TRC / ITMS' };
+    }
     // ---------- getting worse fastest (TMS TGI, newest run vs the oldest of its three) and TGI month by month per line
     var fast = []; C.list.forEach(function (c) { if (!c.tgi || c.tgi.length < 2 || c.ci !== 0) return; var a = c.tgi[0], z = c.tgi[c.tgi.length - 1]; if (a[1] && z[1] && a[0] < z[0]) fast.push({ lid: c.lid, km: c.km, unit: c.unit, tgi: a[0], drop: z[0] - a[0], from: z[1], to: a[1] }); });
     fast.sort(function (a, b) { return b.drop - a.drop; }); out.fast = fast.slice(0, 30);
@@ -1267,6 +1446,33 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     out.inputs = D.inputs || null;
     return out;
   };
+
+  /** [PB] B2: the watch for the three line-type views. Every input record is classified (PE.lineType: main / loop / siding / unknown with its
+   *  source); each view sees only its records (All = everything, unknown included); unknown ones are listed under B7 in every view.
+   *  Returns the main-line view at the top level (older pages) + views {main, loop, all} + lineTypes (counts per kind). */
+  PE.computeWatch = function (D) {
+    var N = D.N; var counts = {}; var unknown = [];
+    var cls = function (list, kind, kindFn) {
+      (list || []).forEach(function (r) {
+        var k = kindFn ? kindFn(r) : kind; var o = PE.lineType(r, k, N); var c = counts[k] = counts[k] || { main: 0, loop: 0, siding: 0, unknown: 0, total: 0 };
+        c.total++; c[o.t || 'unknown']++;
+        if (!o.t && unknown.length < 3000) unknown.push({ kind: k, why: o.src, lid: r.lid || (r.where && r.where.lid) || null, km: r.km != null ? r.km : r.where && r.where.km, m: r.m != null ? r.m : r.where && r.where.m, unit: r.u || r.unit || '', where: r.stn ? r.stn + ' yard, ' + (r.yl || '') : (r.bs || null) });
+      });
+    };
+    cls(D.trc, 'trcRuns'); cls(D.cards, 'spotCards'); cls(D.ws, 'workSite'); cls(D.acRecent, null, function (a) { return a.k === 'pnx' ? 'pnx' : 'assetChange'; });
+    cls(D.mpRecent, 'machineProg'); cls(D.fmc, 'fmc'); cls(D.feedWork, 'feedWork'); cls(D.jobs, 'feedJobs'); cls(D.cond, 'condition'); cls(D.itms, 'itms'); cls(D.ballast, 'ballast'); cls(D.tamping, 'tampingDue');
+    var f = function (list, v) { return (list || []).filter(function (r) { return PE.inView(r.ltp, v); }); };
+    var views = {};
+    ['main', 'loop', 'all'].forEach(function (v) {
+      var Dv = Object.assign({}, D, { view: v, trc: f(D.trc, v), cards: f(D.cards, v), ws: f(D.ws, v), acRecent: f(D.acRecent, v), mpRecent: f(D.mpRecent, v), fmc: f(D.fmc, v), feedWork: f(D.feedWork, v), jobs: f(D.jobs, v), cond: f(D.cond, v), itms: f(D.itms, v), ballast: f(D.ballast, v), tamping: f(D.tamping, v),
+        unknown: unknown, voteCards: (D.cards || []).filter(function (c) { return c.lid && c.km != null; }), voteWs: D.ws || [], prev: D.prev && D.prev.views ? D.prev.views[v] : (v === 'main' ? D.prev : null) });
+      views[v] = PE.computeView(Dv); views[v].view = v;
+    });
+    var out = Object.assign({}, views.main); out.v = 2; out.views = views; out.lineTypes = counts; out.unknownSample = unknown.slice(0, 50);
+    return out;
+  };
+  /** the view of a stored watch file ('main' | 'loop' | 'all'); an old file (v1) has only the main-line-like top level */
+  PE.watchView = function (W, v) { return W && W.views && W.views[v] ? W.views[v] : W; };
 
   // ---------------------------------------------------------------- reading the stored result for a scope
   /** scope: {kind: 'division'|'aen'|'unit', value} -> the units in scope */
@@ -1286,11 +1492,11 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     var get = function (id) { return (watch.rules || []).filter(function (r) { return r.id === id; })[0]; };
     var today = watch.today; var out = [];
     var a3 = get('A3'); if (a3 && a3.status === 'ready') (a3.records || []).filter(inU).filter(function (r) { var lim = r.p === 1 ? (W.p1Days || 3) : (W.p2Days || 7); return r.p === 1 && PE.daysBetween(r.d, today) > lim; }).sort(function (a, b) { return String(a.d).localeCompare(String(b.d)); }).slice(0, 3).forEach(function (r) {
-      out.push({ rank: 1, tag: 'P1 card', title: r.text.replace(/^P1 /, '') + ' – ' + r.lid + ' ' + PE.fmtKm(r.km, r.m), why: 'Raised ' + r.d + ', still open in TMS after ' + PE.daysBetween(r.d, today) + ' days.', go: { view: 'loc', arg: r.lid + '|' + r.km + '|' + (r.m || 0) }, btn: 'Open the place' });
+      out.push({ rank: 1, lt: r.lt, tag: 'P1 card', title: r.text.replace(/^P1 /, '') + ' – ' + r.lid + ' ' + PE.fmtKm(r.km, r.m), why: 'Raised ' + r.d + ', still open in TMS after ' + PE.daysBetween(r.d, today) + ' days.', go: { view: 'loc', arg: r.lid + '|' + r.km + '|' + (r.m || 0) }, btn: 'Open the place' });
     });
     var b4 = get('B4'); if (b4 && b4.status === 'ready') { var g = (b4.records || []).filter(inU); if (g.length) out.push({ rank: 2, tag: 'Enter in TMS', title: g.length + ' work' + (g.length > 1 ? 's' : '') + ' done, not in TMS', why: g.slice(0, 2).map(function (r) { return r.text.split(' – ')[0] + ' (' + r.d + ')'; }).join(' and ') + ' – in Field Mini Control with proof, no TMS work site.', go: { view: 'reg', arg: 'sheet only' }, btn: 'See the works' }); }
-    ['H1', 'H2', 'H5', 'H4'].forEach(function (id) { var h = get(id); if (!h || h.status !== 'ready') return; (h.records || []).filter(inU).slice(0, 1).forEach(function (r) { out.push({ rank: 3, tag: 'Hidden · ' + h.en, title: r.title + (r.lid ? ' – ' + r.lid + ' ' + PE.fmtKm(r.km, r.m) : ''), why: r.seen, go: r.lid ? { view: 'loc', arg: r.lid + '|' + r.km + '|' + (r.m || 0) } : { view: 'ov' }, btn: 'See the evidence' }); }); });
-    var b1 = get('B1'); if (b1 && b1.status === 'ready') (b1.records || []).filter(inU).sort(function (a, b) { return b.n - a.n; }).slice(0, 1).forEach(function (r) { out.push({ rank: 4, tag: 'Overdue check', title: 'Not recorded: ' + r.lid + ' km ' + PE.fmtKm(r.km, r.m) + ' – ' + PE.fmtKm(r.km2, r.m2), why: r.text + ' (' + (Math.round(r.n * 0.2 * 10) / 10) + ' km).', go: { view: 'loc', arg: r.lid + '|' + r.km + '|' + (r.m || 0) }, btn: 'Open the place' }); });
+    ['H1', 'H2', 'H5', 'H4'].forEach(function (id) { var h = get(id); if (!h || h.status !== 'ready') return; (h.records || []).filter(inU).slice(0, 1).forEach(function (r) { out.push({ rank: 3, lt: r.lt, tag: 'Hidden · ' + h.en, title: r.title + (r.lid ? ' – ' + r.lid + ' ' + PE.fmtKm(r.km, r.m) : ''), why: r.seen, go: r.lid ? { view: 'loc', arg: r.lid + '|' + r.km + '|' + (r.m || 0) } : { view: 'ov' }, btn: 'See the evidence' }); }); });
+    var b1 = get('B1'); if (b1 && b1.status === 'ready') (b1.records || []).filter(inU).sort(function (a, b) { return b.n - a.n; }).slice(0, 1).forEach(function (r) { out.push({ rank: 4, lt: r.lt, tag: 'Overdue check', title: 'Not recorded: ' + r.lid + ' km ' + PE.fmtKm(r.km, r.m) + ' – ' + PE.fmtKm(r.km2, r.m2), why: r.text + ' (' + (Math.round(r.n * 0.2 * 10) / 10) + ' km).', go: { view: 'loc', arg: r.lid + '|' + r.km + '|' + (r.m || 0) }, btn: 'Open the place' }); });
     out.sort(function (a, b) { return a.rank - b.rank; });
     return out;
   };

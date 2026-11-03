@@ -12,12 +12,13 @@ const B = s => UI ? UI.bi(s) : { p: s, s: '' };
 // personal link ?t=… is kept on this device and removed from the address bar
 (() => { const q = new URLSearchParams(location.search); const t = q.get('t'); if (t) { try { localStorage.setItem('hwhtp.token', t); } catch (e) { } history.replaceState(null, '', location.pathname + location.hash); } })();
 let TOKEN = ''; try { TOKEN = localStorage.getItem('hwhtp.token') || ''; } catch (e) { }
+const BOOTKEY = 'boot:' + TOKEN.slice(0, 10);   // [PB] B1: the saved start-up answer belongs to one link (division / unit links differ)
 
 // ---------- server calls ----------
 function fetchT(url, opt, ms) { return new Promise((res, rej) => { const c = new AbortController(); const t = setTimeout(() => { c.abort(); rej(new Error('timeout')); }, ms); fetch(url, Object.assign({ signal: c.signal }, opt)).then(r => { clearTimeout(t); res(r); }, e => { clearTimeout(t); rej(e); }); }); }
 // [PB] 03-Nov: every server call shows at once "Working… (server calls take 35–50 s)" with a running timer – the user must never wonder
 const WORK = { n: 0, t0: 0, timer: null, what: '' };
-const WHAT = { boot: 'Opening', files: 'Getting the data', ingest: 'Saving in Drive', feedRead: 'Reading the portal feed', fmcRead: 'Reading Field Mini Control', fmcRelocate: 'Placing the sheet records', fmcDaily: 'Changing the daily read', settingsSave: 'Saving the settings', linkMake: 'Making the link', linkList: 'Getting the links', linkSet: 'Changing the link', status: 'Checking the server' };
+const WHAT = { boot: 'Opening', files: 'Getting the data', ingest: 'Saving in Drive', feedRead: 'Reading the portal feed', watch: 'Computing the watch', fmcRead: 'Reading Field Mini Control', fmcRelocate: 'Placing the sheet records', fmcDaily: 'Changing the daily read', settingsSave: 'Saving the settings', linkMake: 'Making the link', linkList: 'Getting the links', linkSet: 'Changing the link', status: 'Checking the server' };
 function workShow() {
   let b = $('working'); if (!b) { b = document.createElement('div'); b.id = 'working'; b.setAttribute('role', 'status'); b.style.cssText = 'position:fixed;right:16px;bottom:calc(var(--tabH,0px) + 16px);z-index:98;background:var(--accent);color:var(--onaccent);padding:10px 14px;border-radius:12px;font-size:14px;box-shadow:var(--shadow2);max-width:90vw'; document.body.appendChild(b); }
   if (!WORK.n) { b.style.display = 'none'; clearInterval(WORK.timer); WORK.timer = null; return; }
@@ -91,7 +92,7 @@ function toast(msg, bad) { const d = document.createElement('div'); d.className 
 const VIEWS = {};
 function navs() {
   const A = S.boot && S.boot.role === 'admin';
-  return [['loc', 'Location card'], ['reg', 'Work register']].concat(A ? [['#Admin'], ['load', 'Load TMS data'], ['fmc', 'Read Field Mini Control'], ['feed', 'Feed status'], ['links', 'Viewer links'], ['settings', 'Settings'], ['status', 'Version check']] : []);
+  return [['ov', 'Overview'], ['home', 'Three things'], ['loc', 'Location card'], ['reg', 'Work register']].concat(A ? [['#Admin'], ['load', 'Load TMS data'], ['rules', 'Watch rules'], ['fmc', 'Read Field Mini Control'], ['feed', 'Feed status'], ['links', 'Viewer links'], ['settings', 'Settings'], ['status', 'Version check']] : []);
 }
 function drawNav() {
   $('nav').innerHTML = navs().map(x => x[0][0] === '#' ? `<div class="navgrp">${UI.t(x[0].slice(1))}</div>` : `<button data-k="${x[0]}" class="${x[0] === S.view ? 'on' : ''}">${UI.navIcon(x[0])}${(b => `<span class="nl"><span class="p">${b.p}</span>${b.s ? `<span class="s">${b.s}</span>` : ''}</span>`)(B(x[1]))}<span class="cnt"></span></button>`).join('');
@@ -100,7 +101,8 @@ function drawNav() {
 function go(k, arg) { S.view = k; S.arg = arg; try { history.replaceState(null, '', '#' + k + (arg ? '/' + encodeURIComponent(arg) : '')); } catch (e) { } render(); }
 function render() {
   drawNav(); const el = $('views'); el.innerHTML = '';
-  const f = VIEWS[S.view] || VIEWS.loc; Promise.resolve(f(el, S.arg)).catch(e => { el.innerHTML += `<div class="panel body"><div class="inner"><b>Could not show this page.</b><p>${esc(e.error || e.message || e)}</p></div></div>`; console.error(e); });
+  document.body.classList.toggle('front', S.view === 'ov' || S.view === 'home');   // [PB] B1: the two front pages have their own header and bottom bar
+  const f = VIEWS[S.view] || VIEWS[landing()]; Promise.resolve(f(el, S.arg)).catch(e => { el.innerHTML += `<div class="panel body"><div class="inner"><b>Could not show this page.</b><p>${esc(e.error || e.message || e)}</p></div></div>`; console.error(e); });
 }
 function denied(msg) {
   $('rail').classList.add('hidden'); $('boot').classList.add('hidden');
@@ -114,18 +116,20 @@ async function start() {
   if (!CFG.API) { denied('This copy of the portal has no server address yet (config.js).'); return; }
   if (!TOKEN) { denied('ACCESS: This page needs a portal link. Ask the division office (track portal admin) for one.'); return; }
   // the saved copy of the last start-up answer is shown at once, the server is asked in the background
-  let saved = null; try { saved = await ST.get('kv', 'boot'); } catch (e) { }
-  const fresh = call('boot').then(b => { ST.set('kv', 'boot', b).catch(() => { }); return b; });
+  let saved = null; try { saved = await ST.get('kv', BOOTKEY); } catch (e) { }
+  const fresh = call('boot').then(b => { ST.set('kv', BOOTKEY, b).catch(() => { }); return b; });
   S.boot = saved || await fresh.catch(e => { if (!e.access) denied(e.error || 'Could not reach the server.'); throw e; });
   if (saved) fresh.then(b => { S.boot = b; drawWho(); }).catch(e => { if (!e.access) setNet(false, 'Showing the data saved on this device – the server did not answer (' + (e.error || '') + ').'); });
   $('boot').classList.add('hidden'); $('rail').classList.remove('hidden'); drawWho();
-  const h = location.hash.replace(/^#/, '').split('/'); S.view = VIEWS[h[0]] ? h[0] : 'loc'; S.arg = h[1] ? decodeURIComponent(h[1]) : null;
-  $('btnReload').onclick = async () => { S.L = null; try { S.boot = await call('boot'); ST.set('kv', 'boot', S.boot).catch(() => { }); } catch (e) { toast(e.error || 'Not reachable', true); } render(); };
+  const h = location.hash.replace(/^#/, '').split('/'); S.view = VIEWS[h[0]] ? h[0] : landing(); S.arg = h[1] ? decodeURIComponent(h[1]) : null;
+  $('btnReload').onclick = async () => { S.L = null; try { S.boot = await call('boot'); ST.set('kv', BOOTKEY, S.boot).catch(() => { }); } catch (e) { toast(e.error || 'Not reachable', true); } render(); };
   render();
 }
-function drawWho() { const b = S.boot; if (!b) return; $('who').classList.remove('hidden'); $('whoRole').textContent = b.role === 'admin' ? 'Admin' : 'Viewer'; $('whoName').textContent = b.name || ''; }
+/** [PB] B1: division level (Sr DEN, DEN, co-ordination, admin) lands on the Overview; AEN / SSE / JE on Three things */
+function landing() { const b = S.boot || {}; return b.role === 'admin' || !b.level || b.level === 'division' ? 'ov' : 'home'; }
+function drawWho() { const b = S.boot; if (!b) return; $('who').classList.remove('hidden'); $('whoRole').textContent = b.role === 'admin' ? 'Admin' : b.level === 'unit' ? 'Unit ' + (b.unit || '') : b.level === 'aen' ? (b.aen || 'AEN') : 'Viewer'; $('whoName').textContent = b.name || ''; }
 
 window.TMSC = { render };   // ui.js redraws on a language change
-window.HWHTP = { workStart, workEnd, CFG, ST, S, $, esc, dmy, B, call, files, merge, snap, gzB64, unB64, settings, names, locator, pageHead, modal, closeModal, toast, VIEWS, go, render, setNet, MEM };
+window.HWHTP = { BOOTKEY, workStart, workEnd, CFG, ST, S, $, esc, dmy, B, call, files, merge, snap, gzB64, unB64, settings, names, locator, pageHead, modal, closeModal, toast, VIEWS, go, render, setNet, MEM };
 document.addEventListener('DOMContentLoaded', () => { start().catch(e => console.error(e)); });
 })();

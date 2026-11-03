@@ -955,3 +955,318 @@ PE.HE = (function () {
   return { P, kmOf, mOf, cellOf, dateOf, parseChart, parseGmt, buildDoc, evaluate, rollup, RULES, LV, SIG, CF, cellObj, worse };
 })();
 
+
+// ===== engine/watch.js
+// HWH Track Portal – shared engine, part 9: BLIND-SPOT WATCH + HIDDEN FINDINGS (batch B1, 03-Nov-2026; project doc HWH_Portal_LANDING.md).
+// A RULE REGISTRY: each rule = {id, group B|H|A, en, hi, rule (one line), needs (data kinds), thresholds (keys of settings.watch), run(ctx)}.
+// The screens only iterate PE.WATCH_RULES and the stored results – a new rule is added here (or pushed by a later file) without touching them.
+// Only EXACTLY placed events count in place-based rules; block-section / station-only ("approx") events never do.
+// The whole watch is computed in the admin's browser from the stored history files and saved as one small file (kind "watch").
+var PE = (typeof PE !== 'undefined' && PE) || {};
+(function (PE) {
+  'use strict';
+  var lin = function (km, m) { return (+km) * 1000 + (+m || 0); };
+  var monthOf = function (d) { return String(d || '').slice(0, 7); };
+  function lastMonths(today, n) { var out = [], y = +today.slice(0, 4), m = +today.slice(5, 7); for (var i = n - 1; i >= 0; i--) { var mm = m - i, yy = y; while (mm < 1) { mm += 12; yy--; } out.push(yy + '-' + PE.p2(mm)); } return out; }
+  function monthEnd(ym) { var y = +ym.slice(0, 4), m = +ym.slice(5, 7); var d = new Date(Date.UTC(y, m, 0)); return d.toISOString().slice(0, 10); }
+  function isoWeek(d) { var t = new Date(d + 'T00:00:00Z'); var day = (t.getUTCDay() + 6) % 7; t.setUTCDate(t.getUTCDate() - day + 3); var f = new Date(Date.UTC(t.getUTCFullYear(), 0, 4)); return t.getUTCFullYear() + '-W' + PE.p2(1 + Math.round(((t - f) / 864e5 - 3 + ((f.getUTCDay() + 6) % 7)) / 7)); }
+  PE.isoWeek = isoWeek; PE.lastMonths = lastMonths;
+
+  // ---------------------------------------------------------------- the 200 m stretches (cells) of the division, with their unit
+  /** cells from the health files: [{key, lid, km, ci, cg, rs, tgi:[[v, date]...]}]; units: feed units (level 2 = in-charge) */
+  PE.watchCells = function (healthGroups, units) {
+    var cells = [], byKey = {}, byLid = {};
+    var segs = (units || []).filter(function (u) { return u.lid && u.a && u.b; }).sort(function (a, b) { return (a.level === 2 ? 0 : 1) - (b.level === 2 ? 0 : 1); });
+    (healthGroups || []).forEach(function (g) {
+      (g && g.lines || []).forEach(function (L) {
+        var tg = {}; (L.t || []).forEach(function (t) { tg[t[0]] = t[2]; });
+        var fr = (L.f || []).map(function (x) { return { type: x[0], side: x[1], d: x[2], km: +x[3], m: +x[4] }; });
+        (L.c || []).forEach(function (a) {
+          var km = a[0], ci = a[1], pos = PE.P(km, ci * 200 + 100);
+          var u = null; for (var i = 0; i < segs.length; i++) { var s = segs[i]; if (s.lid === L.lid && PE.P(s.a[0], s.a[1]) <= pos && pos < PE.P(s.b[0], s.b[1])) { u = s; break; } }
+          var c = { key: L.lid + '|' + km + '|' + ci, lid: L.lid, km: km, ci: ci, rs: a[2], cg: a[5], lt: a[7], ds: a[9], tgi: tg[km] || null, unit: u ? u.unit : '', aen: u ? u.aen : '', srden: u ? u.srden : '' };
+          cells.push(c); byKey[c.key] = c; (byLid[L.lid] = byLid[L.lid] || []).push(c);
+        });
+        if (byLid[L.lid]) byLid[L.lid].fr = fr;
+      });
+    });
+    return { list: cells, byKey: byKey, byLid: byLid };
+  };
+  /** the cells an event covers (exact km range); [] when not placed exactly */
+  PE.cellsOf = function (C, lid, km, m, km2, m2) {
+    var L = C.byLid[lid]; if (!L || km == null) return [];
+    var a = lin(km, m), b = lin(km2 != null ? km2 : km, m2 != null ? m2 : m); if (b < a) { var t = a; a = b; b = t; }
+    var out = []; for (var i = 0; i < L.length; i++) { var c = L[i], c0 = lin(c.km, c.ci * 200), c1 = c.ci === 4 ? lin(c.km + 1, 0) - 1 : c0 + 199; if (c0 <= b && a <= c1) out.push(c); }
+    return out;
+  };
+  /** contiguous cells -> stretches {lid, km, m, km2, m2, n, unit} */
+  function stretches(cells) {
+    var by = {}; cells.forEach(function (c) { (by[c.lid] = by[c.lid] || []).push(c); });
+    var out = [];
+    Object.keys(by).forEach(function (lid) {
+      var L = by[lid].sort(function (a, b) { return a.km - b.km || a.ci - b.ci; }); var cur = null;
+      L.forEach(function (c) {
+        var nx = cur && ((c.km === cur.lk && c.ci === cur.lci + 1) || (c.km === cur.lk + 1 && c.ci === 0 && cur.lci === 4));
+        if (nx && c.unit === cur.unit) { cur.lk = c.km; cur.lci = c.ci; cur.n++; cur.km2 = c.km; cur.m2 = c.ci * 200 + 200; }
+        else { if (cur) out.push(cur); cur = { lid: lid, km: c.km, m: c.ci * 200, km2: c.km, m2: c.ci * 200 + 200, n: 1, unit: c.unit, lk: c.km, lci: c.ci }; }
+      });
+      if (cur) out.push(cur);
+    });
+    return out.map(function (s) { delete s.lk; delete s.lci; if (s.m2 >= 1000) { s.km2 = s.km2 + 1; s.m2 = 0; } return s; });
+  }
+  PE.stretches = stretches;
+
+  // ---------------------------------------------------------------- the registry
+  PE.WATCH_RULES = [];
+  PE.addWatchRule = function (r) { PE.WATCH_RULES = PE.WATCH_RULES.filter(function (x) { return x.id !== r.id; }); PE.WATCH_RULES.push(r); return r; };
+  var R = PE.addWatchRule;
+
+  // B1 – not recorded: no TRC run over the 200 m within settings.watch.trcDays (OMS later)
+  R({ id: 'B1', group: 'B', en: 'Not recorded', hi: 'रिकॉर्डिंग नहीं हुई', rule: 'No TRC run over the 200 m within the schedule (OMS added when its run list is loaded)', needs: ['trcRuns', 'health'], later: ['omsRuns'], thresholds: ['trcDays'], unitText: 'stretches',
+    run: function (X) {
+      var W = X.W, today = X.today; var last = {}, all = {};
+      X.trc.forEach(function (r) { PE.cellsOf(X.C, r.lid, r.km, r.m, r.km2, r.m2).forEach(function (c) { (all[c.key] = all[c.key] || []).push(r.d); if (!last[c.key] || r.d > last[c.key]) last[c.key] = r.d; }); });
+      X.cellLastTrc = last;
+      var bad = X.C.list.filter(function (c) { return !last[c.key] || PE.daysBetween(last[c.key], today) > W.trcDays; });
+      var monthly = lastMonths(today, 12).map(function (ym) { var e = monthEnd(ym); if (e > today) e = today; return [ym, X.C.list.filter(function (c) { var ds = (all[c.key] || []).filter(function (d) { return d <= e; }); var l = ds.sort().pop(); return !l || PE.daysBetween(l, e) > W.trcDays; }).length]; });
+      return { cells: bad, records: stretches(bad).map(function (s) { var c = X.C.byKey[s.lid + '|' + s.km + '|' + (s.m / 200)]; var l = c && last[c.key]; s.text = l ? 'last TRC run ' + l + ' (' + PE.daysBetween(l, today) + ' days)' : 'no TRC run in TMS\'s list (from Mar-2023)'; return s; }), monthly: monthly, dataOf: ['tms'] };
+    } });
+  // B2 – not inspected
+  R({ id: 'B2', group: 'B', en: 'Not inspected', hi: 'निरीक्षण नहीं हुआ', rule: 'No trolley / foot / footplate inspection over the stretch in time', needs: ['inspections'], thresholds: [], unitText: 'stretches' });
+  // B3 – card closed, nothing done
+  R({ id: 'B3', group: 'B', en: 'Closed, nothing done', hi: 'बंद, कार्य दर्ज नहीं', rule: 'Spot card closed in TMS with no action recorded (cards whose details are fetched)', needs: ['spotCards'], thresholds: [], unitText: 'cards',
+    run: function (X) {
+      var since = PE.addDays(X.today, -365);
+      var L = X.cards.filter(function (c) { return c.st === 'closed' && c.act !== undefined && !c.act && (c.cmp || c.d16 || c.d) >= since; });
+      var months = lastMonths(X.today, 12);
+      return { records: L.map(function (c) { return { lid: c.lid, km: c.km, m: c.m, unit: c.u, d: c.cmp || c.d16, text: c.src + ' card "' + c.ob + '" closed ' + (c.cmp || c.d16) + ' – action blank', id: c.id }; }), count: L.length, unitOf: function (r) { return r.unit; },
+        monthly: months.map(function (ym) { return [ym, L.filter(function (c) { return monthOf(c.cmp || c.d16) === ym; }).length]; }), note: X.detailShare < 1 ? 'only cards whose details are fetched (' + Math.round(X.detailShare * 100) + ' %)' : '', dataOf: ['tms'] };
+    } });
+  // B4 – done, not in TMS
+  R({ id: 'B4', group: 'B', en: 'Done, not in TMS', hi: 'कार्य हुआ, TMS में नहीं', rule: 'Field Mini Control work with proof, no matching TMS work site (date ± 1 day, unit, line, km)', needs: ['fmc', 'workSite'], thresholds: [], unitText: 'works',
+    run: function (X) {
+      var L = X.pk.filter(function (p) { return p.outcome === 'sheet only'; });
+      return { records: L.map(function (p) { return { lid: p.lid, km: p.km, m: p.m, approx: p.approx, unit: p.u, d: p.date, text: (p.type || 'work') + ' – ' + (p.fmc && p.fmc.bs || '') + ' ' + (p.fmc && p.fmc.line || '') + ' – in Field Mini Control, not in TMS work sites', go: { view: 'reg', arg: 'sheet only' } }; }), count: L.length, unitOf: function (r) { return r.unit; },
+        monthly: lastMonths(X.today, 12).map(function (ym) { return [ym, X.fmcCovered[ym] ? L.filter(function (p) { return monthOf(p.date) === ym; }).length : null]; }), dataOf: ['fmc', 'tms'] };
+    } });
+  // B5 – in TMS, no proof
+  R({ id: 'B5', group: 'B', en: 'In TMS, no proof', hi: 'TMS में, प्रमाण नहीं', rule: 'TMS work site with no Field Mini Control proof, or proof without certificates / photos', needs: ['fmc', 'workSite'], thresholds: [], unitText: 'work sites',
+    run: function (X) {
+      var L = X.pk.filter(function (p) { return p.outcome === 'tms only' || (p.outcome === 'matched' && PE.proofMissing(p.fmc).length); });
+      return { records: L.map(function (p) { return { lid: p.lid, km: p.km, m: p.m, unit: p.u, d: p.date, text: (p.type || '') + (p.outcome === 'tms only' ? ' – no sheet proof' : ' – missing ' + PE.proofMissing(p.fmc).join(', ')), go: { view: 'reg', arg: p.outcome } }; }), count: L.length, unitOf: function (r) { return r.unit; },
+        monthly: lastMonths(X.today, 12).map(function (ym) { return [ym, X.fmcCovered[ym] ? L.filter(function (p) { return monthOf(p.date) === ym; }).length : null]; }), dataOf: ['fmc', 'tms'] };
+    } });
+  // B6 – bad but untouched
+  R({ id: 'B6', group: 'B', en: 'Bad but untouched', hi: 'खराब, पर कोई कार्यवाही नहीं', rule: 'TMS track geometry index of the km below the limit, and in 12 months no card, no work, no open job / plan in the 200 m', needs: ['health', 'spotCards'], thresholds: ['b6TgiBelow', 'b6Months'], unitText: 'stretches',
+    run: function (X) {
+      var W = X.W, since = PE.addDays(X.today, -Math.round(W.b6Months * 30.4)); var touched = {};
+      X.cards.forEach(function (c) { if ((c.d || '') >= since || c.st === 'open') PE.cellsOf(X.C, c.lid, c.km, c.m).forEach(function (x) { touched[x.key] = 1; }); });
+      X.work.forEach(function (w) { if ((w.d || '') >= since) PE.cellsOf(X.C, w.lid, w.km, w.m, w.km2, w.m2).forEach(function (x) { touched[x.key] = 1; }); });
+      X.jobs.forEach(function (j) { if (!/closed|verified|deleted/i.test(j.st || '')) PE.cellsOf(X.C, j.lid, j.km, j.m, j.km2, j.m2).forEach(function (x) { touched[x.key] = 1; }); });
+      var bad = X.C.list.filter(function (c) { return c.tgi && c.tgi[0] && c.tgi[0][0] < W.b6TgiBelow && !touched[c.key]; });
+      return { cells: bad, records: stretches(bad).map(function (s) { var c = X.C.byKey[s.lid + '|' + s.km + '|' + (s.m / 200)]; s.text = 'TMS TGI ' + (c && c.tgi ? c.tgi[0][0] + ' (run ' + (c.tgi[0][1] || '?') + ')' : '?') + ' – no card, no work, no plan in ' + W.b6Months + ' months'; return s; }), snapshot: true, dataOf: ['tms'] };
+    } });
+  // B7 – data missing
+  R({ id: 'B7', group: 'B', en: 'Data missing', hi: 'डेटा उपलब्ध नहीं', rule: 'Linear data missing in TMS, or records that could not be placed to km (cushion not measured: when the ballast-cushion kind is loaded)', needs: ['condition'], later: ['ballastCushion'], thresholds: [], unitText: 'stretches',
+    run: function (X) {
+      var miss = {}; X.cond.filter(function (c) { return c.k === 'missing'; }).forEach(function (c) { PE.cellsOf(X.C, c.lid, c.km, c.m, c.km2, c.m2).forEach(function (x) { miss[x.key] = x; }); });
+      var cells = Object.keys(miss).map(function (k) { return miss[k]; });
+      return { cells: cells, records: stretches(cells).map(function (s) { s.text = 'TMS: linear data missing'; return s; }), extra: { notPlaced: X.notPlaced }, snapshot: true, dataOf: ['tms', 'fmc'] };
+    } });
+  // H1 – repeat, never fixed
+  R({ id: 'H1', group: 'H', en: 'Repeat, never fixed', hi: 'बार-बार, कभी ठीक नहीं', rule: 'Same 200 m gets cards again and again in 12 months, each one closed', needs: ['spotCards'], thresholds: ['repeatCards', 'repeatMonths'], src: ['Spot cards', 'TMS work', 'Machine days', 'Field sheet'],
+    run: function (X) {
+      var W = X.W, since = PE.addDays(X.today, -Math.round(W.repeatMonths * 30.4)); var by = {};
+      X.cards.forEach(function (c) { if ((c.d || '') < since) return; var cs = PE.cellsOf(X.C, c.lid, c.km, c.m); if (cs.length) (by[cs[0].key] = by[cs[0].key] || []).push(c); });
+      var out = [];
+      Object.keys(by).forEach(function (k) {
+        var L = by[k]; var dates = {}; L.forEach(function (c) { dates[c.d] = 1; }); var nd = Object.keys(dates).length;
+        if (nd < W.repeatCards || L.some(function (c) { return c.st === 'open'; })) return;
+        var c0 = X.C.byKey[k]; var wk = X.work.filter(function (w) { return (w.d || '') >= since && PE.cellsOf(X.C, w.lid, w.km, w.m, w.km2, w.m2).some(function (x) { return x.key === k; }); });
+        out.push({ lid: c0.lid, km: c0.km, m: c0.ci * 200, unit: c0.unit, n: L.length, d: Object.keys(dates).sort().pop(),
+          title: 'Same 200 m: ' + L.length + ' cards on ' + nd + ' dates – closed every time',
+          tms: L.length + ' separate cards, each closed', seen: 'one spot, ' + nd + ' inspections in ' + W.repeatMonths + ' months; work recorded here: ' + (wk.length ? wk.length + ' (' + wk.map(function (w) { return w.what; }).filter(Boolean).slice(0, 2).join(', ') + ')' : 'none') + ' – look for the cause, not one more closure' });
+      });
+      out.sort(function (a, b) { return b.n - a.n; });
+      return { records: out, count: out.length, unitOf: function (r) { return r.unit; }, dataOf: ['tms'] };
+    } });
+  // H2 – work didn't improve (TMS TGI per km: run before vs run after an exactly placed work)
+  R({ id: 'H2', group: 'H', en: 'Work didn\'t improve', hi: 'कार्य से सुधार नहीं', rule: 'Exactly placed work, but TMS\'s TGI of the km on the next run is not better than the run before (TGI: higher = better)', needs: ['health'], thresholds: ['h2WindowDays', 'h2MinGain'], src: ['Work (exact km)', 'TRC before / after'],
+    run: function (X) {
+      var W = X.W, out = [], seen = {};
+      X.work.forEach(function (w) {
+        if (!w.d || !w.geo) return;
+        PE.cellsOf(X.C, w.lid, w.km, w.m, w.km2, w.m2).forEach(function (c) {
+          var k = c.key + '|' + w.d; if (seen[k] || !c.tgi) return;
+          var runs = c.tgi.filter(function (r) { return r[1]; }).slice().sort(function (a, b) { return String(a[1]).localeCompare(String(b[1])); });
+          var before = runs.filter(function (r) { return r[1] < w.d; }).pop(), after = runs.filter(function (r) { return r[1] > w.d && PE.daysBetween(w.d, r[1]) <= W.h2WindowDays; })[0];
+          if (!before || !after) return; seen[k] = 1;
+          if (after[0] - before[0] < W.h2MinGain) out.push({ lid: c.lid, km: c.km, m: c.ci * 200, unit: c.unit, d: w.d, before: before[0], after: after[0],
+            title: w.what + ' on ' + w.d + ' – TGI ' + before[0] + ' before, ' + after[0] + ' after',
+            tms: w.src + ' shows the work done' + (w.src === 'TMS work site' ? '' : ''), seen: 'TGI of km ' + c.km + ': ' + before[0] + ' (run ' + before[1] + ') → ' + after[0] + ' (run ' + after[1] + ') – no gain from the work' });
+        });
+      });
+      return { records: out, count: out.length, unitOf: function (r) { return r.unit; }, monthly: lastMonths(X.today, 12).map(function (ym) { return [ym, out.filter(function (r) { return monthOf(r.d) === ym; }).length]; }), dataOf: ['tms'] };
+    } });
+  // H3 – defect, no card
+  R({ id: 'H3', group: 'H', en: 'Defect, no card', hi: 'दोष, कार्ड नहीं', rule: 'ITMS / TRC exception at a place with no spot card', needs: ['itmsDefects'], thresholds: [], src: ['ITMS reports', 'Spot cards'] });
+  // H4 – paper before work
+  R({ id: 'H4', group: 'H', en: 'Paper before work', hi: 'कार्य से पहले कागज़', rule: 'Card complied on a day with no TMS work site, machine day, app record or sheet work at that place (gang work not loaded yet)', needs: ['spotCards', 'workSite'], later: ['gangWork'], thresholds: [], src: ['Spot cards', 'TMS work', 'Machine days', 'Field sheet'],
+    run: function (X) {
+      var since = PE.addDays(X.today, -365); var day = {};
+      X.work.forEach(function (w) { if (!w.d) return; PE.cellsOf(X.C, w.lid, w.km, w.m, w.km2, w.m2).forEach(function (c) { day[c.key + '|' + w.d] = 1; }); });
+      var L = X.cards.filter(function (c) { return c.st === 'closed' && c.cmp && c.cmp >= since; });
+      var out = L.filter(function (c) { var cs = PE.cellsOf(X.C, c.lid, c.km, c.m); return cs.length && !cs.some(function (x) { return day[x.key + '|' + c.cmp] || day[x.key + '|' + PE.addDays(c.cmp, -1)]; }); });
+      var byU = {}; out.forEach(function (c) { (byU[c.u || '?'] = byU[c.u || '?'] || []).push(c); });
+      var rec = Object.keys(byU).map(function (u) { var L2 = byU[u]; var c0 = L2[0]; return { unit: u, lid: c0.lid, km: c0.km, m: c0.m, n: L2.length, d: L2.map(function (c) { return c.cmp; }).sort().pop(),
+        title: L2.length + ' cards complied on days with no recorded work at that place', tms: 'cards closed – looks fine', seen: 'no TMS work site, machine day, app record or sheet work there that day (gang work not loaded yet – check before acting)', places: L2.slice(0, 5).map(function (c) { return { lid: c.lid, km: c.km, m: c.m, d: c.cmp }; }) }; }).sort(function (a, b) { return b.n - a.n; });
+      return { records: rec, count: out.length, unitOf: function (r) { return r.unit; }, note: X.detailShare < 1 ? 'cards with details only (' + Math.round(X.detailShare * 100) + ' %)' : '', dataOf: ['tms', 'fmc'] };
+    } });
+  // H5 – ageing unseen
+  R({ id: 'H5', group: 'H', en: 'Ageing unseen', hi: 'पुरानी रेल, अनदेखी', rule: 'Rail near its GMT life and weld fractures nearby – renewal proposal to be checked', needs: ['health'], later: ['renewalDue'], thresholds: ['lifeWatch', 'h5Fractures', 'h5Months', 'h5NearKm'], src: ['GMT', 'Fractures (TMS chart)', 'Renewal due'],
+    run: function (X) {
+      var W = X.W, life = (X.S.rules && X.S.rules.life) || { '04': 800, '03': 525 }, since = PE.addDays(X.today, -Math.round(W.h5Months * 30.4)), out = [];
+      Object.keys(X.C.byLid).forEach(function (lid) {
+        var L = X.C.byLid[lid], fr = (L.fr || []).filter(function (f) { return /weld/i.test(f.type) && f.d && f.d >= since; }); if (fr.length < W.h5Fractures) return;
+        var done = {};
+        L.forEach(function (c) {
+          var lf = life[c.rs]; if (!lf || c.cg == null || c.cg / lf < W.lifeWatch || done[c.km]) return;
+          var near = fr.filter(function (f) { return Math.abs(f.km - c.km) <= W.h5NearKm; }); if (near.length < W.h5Fractures) return;
+          done[c.km] = 1;
+          out.push({ lid: lid, km: c.km, m: c.ci * 200, unit: c.unit, n: near.length, d: near.map(function (f) { return f.d; }).sort().pop(),
+            title: 'Rail at ' + Math.round(c.cg / lf * 100) + ' % of GMT life, ' + near.length + ' weld fractures within ' + W.h5NearKm + ' km',
+            tms: 'GMT register and fracture list, separately', seen: c.cg + ' of ' + lf + ' GMT carried; ' + near.length + ' weld fractures since ' + since + (X.has.renewalDue ? '' : ' – renewal proposals not loaded yet: check whether it is proposed') });
+        });
+      });
+      return { records: out, count: out.length, unitOf: function (r) { return r.unit; }, dataOf: ['tms'] };
+    } });
+  // H6 – season pattern
+  R({ id: 'H6', group: 'H', en: 'Season pattern', hi: 'मौसमी स्वरूप', rule: 'Bad every monsoon, recovers in winter – from TQI history since 2019 and water logging', needs: ['tqiHistory'], later: ['waterLogging'], thresholds: [], src: ['TQI history', 'Water logging'] });
+  // needs-action tiles (A)
+  R({ id: 'A1', group: 'A', en: 'Deep screening needed', hi: 'डीप स्क्रीनिंग आवश्यक', rule: 'Clean ballast cushion below settings.rules.cleanCushionMm (TMS ballast report)', needs: ['ballastCushion'], thresholds: [] });
+  R({ id: 'A2', group: 'A', en: 'Tamping due', hi: 'टैम्पिंग देय', rule: 'TMS tamping due (PML / CBML) list', needs: ['tampingDue'], thresholds: [] });
+  R({ id: 'A3', group: 'A', en: 'Open P1 / P2 spot cards', hi: 'खुले P1 / P2 कार्ड', rule: 'Spot cards of priority 1 or 2 still open in TMS', needs: ['spotCards'], thresholds: [],
+    run: function (X) {
+      var L = X.cards.filter(function (c) { return c.st === 'open' && (+c.p === 1 || +c.p === 2); });
+      var months = lastMonths(X.today, 12);
+      return { records: L.map(function (c) { return { lid: c.lid, km: c.km, m: c.m, unit: c.u, d: c.d, p: +c.p, text: 'P' + c.p + ' ' + c.src + ': ' + c.ob, id: c.id }; }), count: L.length, unitOf: function (r) { return r.unit; },
+        monthly: months.map(function (ym) { var e = monthEnd(ym); return [ym, X.cards.filter(function (c) { return (+c.p === 1 || +c.p === 2) && c.d && c.d <= e && (c.st === 'open' || (c.d16 && c.d16 > e)); }).length]; }), dataOf: ['tms'] };
+    } });
+  R({ id: 'A4', group: 'A', en: 'Work that didn\'t hold', hi: 'कार्य जो टिका नहीं', rule: 'Same as H2: exact work with no TGI gain on the next run', needs: ['health'], thresholds: [],
+    run: function (X) { var h = X.results.H2 || { records: [] }; return { records: h.records, count: h.records.length, unitOf: function (r) { return r.unit; }, monthly: h.monthly, dataOf: ['tms'] }; } });
+
+  // ---------------------------------------------------------------- run everything
+  /** D: {S, today, health:[groups], units, trc, cards, ws, fmc (located), feedWork, jobs, acRecent, mpRecent, cond, itms, loaded, fmcCoverage, dataAt:{tms, fmc, feed}, prev (previous watch file)} */
+  PE.computeWatch = function (D) {
+    var S = D.S || {}, W = Object.assign({}, S.watch || {}), today = D.today;
+    var C = PE.watchCells(D.health, D.units);
+    var has = {}; Object.keys(D.has || {}).forEach(function (k) { if (D.has[k]) has[k] = 1; });
+    // exactly placed work events (the rules' "work"): TMS work sites, asset changes (rail / sleeper / ballast / weld), machine days placed exactly,
+    // Field Mini Control records placed exactly, TMS Control work records. Approx never.
+    var work = [];
+    (D.ws || []).forEach(function (w) { if (w.lid && w.km != null) work.push({ lid: w.lid, km: w.km, m: w.m, km2: w.km2, m2: w.m2, d: w.d, src: 'TMS work site', what: w.sub || w.wt, geo: /tamp|ctr|tsr|trr|screen|bcm|destress|rail|sleeper|lifting|realign|pqrs/i.test(w.sub || '') }); });
+    (D.acRecent || []).forEach(function (a) { if (a.lid && a.km != null && a.k !== 'pnx') work.push({ lid: a.lid, km: a.km, m: a.m, km2: a.km2, m2: a.m2, d: a.d, src: 'TMS asset change', what: a.k + ' change', geo: /sleeper|ballast/.test(a.k) }); });
+    (D.mpRecent || []).forEach(function (r) { if (r.lid && r.km != null && !r.approx) work.push({ lid: r.lid, km: r.km, m: r.m, km2: r.km2, m2: r.m2, d: r.d, src: 'TMS machine progress', what: r.mc, geo: /tamp|unimat|duomatic|dtex|csm|09|ctr|bcm|utv/i.test(r.mc || '') }); });
+    (D.fmc || []).forEach(function (r) { var w = r.where || {}; if (w.lid && !w.approx) work.push({ lid: w.lid, km: w.km, m: w.m, km2: w.km2, m2: w.m2, d: r.date, src: 'Field Mini Control', what: r.purpose || r.details || r.reason, geo: /tamp|unimat|duomatic|dtex|packing|utv|pqrs|screen|destress|rail/i.test((r.purpose || '') + ' ' + (r.details || '')) }); });
+    (D.feedWork || []).forEach(function (r) { if (r.lid && r.km != null) work.push({ lid: r.lid, km: r.km, m: r.m, km2: r.km2, m2: r.m2, d: r.d, src: 'TMS Control work record', what: (r.types || []).join(', '), geo: /tamp|packing|screen|rail/i.test((r.types || []).join(' ')) }); });
+    var cards = (D.cards || []).filter(function (c) { return c.lid && c.km != null; });
+    var withDet = cards.filter(function (c) { return c.act !== undefined; }).length;
+    // a 200 m stretch outside the feed's unit map takes the unit TMS itself names most often on that km (spot cards, work sites)
+    var vote = {}; cards.concat(D.ws || []).forEach(function (r) { if (!r.u || !r.lid || r.km == null) return; var k = r.lid + '|' + r.km; var o = vote[k] = vote[k] || {}; o[r.u] = (o[r.u] || 0) + 1; });
+    var aenOf = {}; (D.ws || []).forEach(function (w) { if (w.u && w.aen) aenOf[w.u] = PE.desig(w.aen) || w.aen; }); (D.units || []).forEach(function (u) { if (u.unit && u.aen) aenOf[u.unit] = u.aen; });
+    C.list.forEach(function (c) { if (c.unit) return; var o = vote[c.lid + '|' + c.km]; if (!o) { for (var d = 1; d <= 3 && !o; d++) o = vote[c.lid + '|' + (c.km - d)] || vote[c.lid + '|' + (c.km + d)]; } if (!o) return; c.unit = Object.keys(o).sort(function (a, b) { return o[b] - o[a]; })[0]; c.aen = aenOf[c.unit] || ''; c.unitBy = 'tms'; });
+    var pk = PE.buildPackages(D.fmc || [], D.ws || [], { ac: D.acRecent || [], mp: D.mpRecent || [], fw: D.feedWork || [], sc: [] }, { S: S, N: D.N, coverage: D.fmcCoverage || {} });
+    var fmcCovered = {}; Object.keys(D.fmcCoverage || {}).forEach(function (d) { fmcCovered[monthOf(d)] = 1; });
+    var X = { S: S, W: W, today: today, C: C, has: has, trc: D.trc || [], cards: cards, detailShare: cards.length ? withDet / cards.length : 0, work: work, pk: pk, jobs: D.jobs || [], cond: D.cond || [], fmcCovered: fmcCovered, notPlaced: D.notPlaced || {}, results: {} };
+    var out = { v: 1, computedAt: D.now || new Date().toISOString(), today: today, dataAt: D.dataAt || {}, freshDays: W.freshDays || {}, cells: C.list.length, rules: [], units: {}, lines: [] };
+    PE.WATCH_RULES.forEach(function (r) {
+      var miss = (r.needs || []).filter(function (k) { return !has[k]; });
+      var e = { id: r.id, group: r.group, en: r.en, hi: r.hi, rule: r.rule, needs: r.needs, later: r.later || [], thresholds: (r.thresholds || []).map(function (k) { return [k, W[k]]; }), src: r.src || [], unitText: r.unitText || '', status: !r.run ? 'waiting' : miss.length ? 'waiting' : 'ready', missing: !r.run && !miss.length ? (r.needs || []) : miss };
+      if (e.status === 'ready') {
+        try {
+          var res = r.run(X); X.results[r.id] = res;
+          var recs = res.records || [];
+          e.count = res.cells ? res.cells.length : (res.count != null ? res.count : recs.length);
+          e.km = res.cells ? Math.round(res.cells.length * 0.2 * 10) / 10 : null;
+          e.byUnit = {}; (res.cells || recs).forEach(function (x) { var u = x.unit || '?'; e.byUnit[u] = (e.byUnit[u] || 0) + (res.cells ? 1 : (x.n && r.id === 'H4' ? x.n : 1)); });
+          if (r.id === 'H4') e.count = res.count;
+          e.records = recs.slice(0, W.maxRecords || 400); e.more = Math.max(0, recs.length - e.records.length);
+          e.monthly = res.monthly || null; e.snapshot = !!res.snapshot; e.note = res.note || ''; e.extra = res.extra || null; e.dataOf = res.dataOf || ['tms'];
+        } catch (err) { e.status = 'error'; e.error = String(err && err.message || err); }
+      }
+      out.rules.push(e);
+    });
+    // ---------- per-unit watch score: share of the unit's 200 m stretches / works where each AVAILABLE check is in time
+    var lastTrc = X.cellLastTrc || {};
+    var units = {}; C.list.forEach(function (c) { var u = c.unit || '?'; var o = units[u] = units[u] || { unit: u, aen: c.aen || aenOf[u] || '', srden: c.srden, cells: 0, trcOk: 0 }; o.cells++; if (lastTrc[c.key] && PE.daysBetween(lastTrc[c.key], today) <= W.trcDays) o.trcOk++; });
+    pk.forEach(function (p) { var u = p.u || '?'; var o = units[u] = units[u] || { unit: u, aen: aenOf[u] || '', cells: 0, trcOk: 0 }; if (p.outcome === 'not checked') return; if (p.fmc || p.outcome === 'tms only') { o.proofN = (o.proofN || 0) + 1; if (p.fmc && !PE.proofMissing(p.fmc).length) o.proofOk = (o.proofOk || 0) + 1; } if (p.fmc) { o.entryN = (o.entryN || 0) + 1; if (p.outcome === 'matched') o.entryOk = (o.entryOk || 0) + 1; } });
+    var week = isoWeek(today); var prevW = (D.prev && D.prev.weekly) || {};
+    Object.keys(units).forEach(function (u) {
+      var o = units[u]; var comp = [];
+      if (o.cells && has.trcRuns) comp.push({ k: 'TRC', share: o.trcOk / o.cells, n: o.cells });
+      if (o.proofN) comp.push({ k: 'Work proof', share: (o.proofOk || 0) / o.proofN, n: o.proofN });
+      if (o.entryN) comp.push({ k: 'TMS entry', share: (o.entryOk || 0) / o.entryN, n: o.entryN });
+      o.components = comp.map(function (c) { return { k: c.k, pct: Math.round(c.share * 100), n: c.n }; });
+      o.missing = ['Inspection (trolley / foot / footplate) – not loaded yet'].concat(has.trcRuns ? [] : ['TRC']).concat(o.proofN ? [] : ['Work proof – no work in the sheet days read']).concat(o.entryN ? [] : ['TMS entry – no sheet work']);
+      o.score = comp.length ? Math.round(comp.reduce(function (a, c) { return a + c.share; }, 0) / comp.length * 100) : null;
+    });
+    out.units = units;
+    out.weekly = JSON.parse(JSON.stringify(prevW)); out.weekly[week] = {}; Object.keys(units).forEach(function (u) { out.weekly[week][u] = units[u].score; });
+    var wk = Object.keys(out.weekly).sort(); if (wk.length > 60) wk.slice(0, wk.length - 60).forEach(function (k) { delete out.weekly[k]; });
+    // ---------- monthly snapshots of rules without history (B6, B7): kept from one computation to the next
+    out.snapshots = JSON.parse(JSON.stringify((D.prev && D.prev.snapshots) || {}));
+    out.rules.forEach(function (e) { if (e.status !== 'ready' || !e.snapshot) return; var m = monthOf(today); (out.snapshots[e.id] = out.snapshots[e.id] || {})[m] = e.count; e.monthly = lastMonths(today, 12).map(function (ym) { var v = out.snapshots[e.id][ym]; return [ym, v == null ? null : v]; }); });
+    // ---------- coverage: track seen fully in time / partly / blind (with the checks available)
+    var seen = 0, partly = 0, blind = 0; var b6 = {}; ((X.results.B6 || {}).cells || []).forEach(function (c) { b6[c.key] = 1; });
+    C.list.forEach(function (c) { var t = lastTrc[c.key] && PE.daysBetween(lastTrc[c.key], today) <= W.trcDays; if (t && !b6[c.key]) seen++; else if (t || lastTrc[c.key]) partly++; else blind++; });
+    out.coverage = { seen: seen, partly: partly, blind: blind, km: { seen: Math.round(seen * 0.2), partly: Math.round(partly * 0.2), blind: Math.round(blind * 0.2) }, basis: 'TRC run in time (and not "bad but untouched"); inspections and OMS added when loaded' };
+    // ---------- who is watching each line
+    var lineRows = {};
+    C.list.forEach(function (c) { var o = lineRows[c.lid] = lineRows[c.lid] || { lid: c.lid, units: {}, cells: 0, worstTrc: null, never: 0 }; o.cells++; o.units[c.unit || '?'] = 1; var l = lastTrc[c.key]; if (!l) o.never++; else if (!o.worstTrc || l < o.worstTrc) o.worstTrc = l; });
+    var itmsLast = {}; (D.itms || []).forEach(function (r) { if (r.lid && (!itmsLast[r.lid] || r.d > itmsLast[r.lid])) itmsLast[r.lid] = r.d; });
+    pk.forEach(function (p) { if (!p.lid || !lineRows[p.lid] || p.outcome === 'not checked') return; var o = lineRows[p.lid]; if (p.fmc) { o.proofN = (o.proofN || 0) + 1; if (!PE.proofMissing(p.fmc).length) o.proofOk = (o.proofOk || 0) + 1; } if (p.outcome === 'sheet only') o.gaps = (o.gaps || 0) + 1; });
+    out.lines = Object.keys(lineRows).sort().map(function (k) { var o = lineRows[k]; return { lid: k, units: Object.keys(o.units), cells: o.cells, trc: o.never ? { never: true, n: o.never } : { d: o.worstTrc, days: o.worstTrc ? PE.daysBetween(o.worstTrc, today) : null }, itms: itmsLast[k] ? { d: itmsLast[k], days: PE.daysBetween(itmsLast[k], today) } : null, proof: o.proofN ? Math.round((o.proofOk || 0) / o.proofN * 100) : null, gaps: o.gaps || 0 }; });
+    // ---------- getting worse fastest (TMS TGI, newest run vs the oldest of its three) and TGI month by month per line
+    var fast = []; C.list.forEach(function (c) { if (!c.tgi || c.tgi.length < 2 || c.ci !== 0) return; var a = c.tgi[0], z = c.tgi[c.tgi.length - 1]; if (a[1] && z[1] && a[0] < z[0]) fast.push({ lid: c.lid, km: c.km, unit: c.unit, tgi: a[0], drop: z[0] - a[0], from: z[1], to: a[1] }); });
+    fast.sort(function (a, b) { return b.drop - a.drop; }); out.fast = fast.slice(0, 30);
+    var heat = {}; var act = (S.rules && S.rules.tgi && S.rules.tgi.act) || 50;
+    C.list.forEach(function (c) { if (c.ci !== 0 || !c.tgi) return; c.tgi.forEach(function (r) { if (!r[1]) return; var m = monthOf(r[1]); var o = (heat[c.lid] = heat[c.lid] || {}); var x = o[m] = o[m] || { n: 0, bad: 0 }; x.n++; if (r[0] < act) x.bad++; }); });
+    out.heat = { act: act, lines: Object.keys(heat).sort().map(function (lid) { return { lid: lid, months: Object.keys(heat[lid]).sort().map(function (m) { return [m, heat[lid][m].n, heat[lid][m].bad]; }) }; }) };
+    out.dataDates = D.dataAt || {};
+    out.inputs = D.inputs || null;
+    return out;
+  };
+
+  // ---------------------------------------------------------------- reading the stored result for a scope
+  /** scope: {kind: 'division'|'aen'|'unit', value} -> the units in scope */
+  PE.scopeUnits = function (watch, scope) {
+    var U = watch.units || {}; var all = Object.keys(U);
+    if (!scope || scope.kind === 'division') return all;
+    if (scope.kind === 'aen') return all.filter(function (u) { return String(U[u].aen || '') === scope.value; });
+    return all.filter(function (u) { return u === scope.value; });
+  };
+  PE.ruleCount = function (rule, units) {
+    if (rule.status !== 'ready') return null; if (!units) return rule.count;
+    var set = {}; units.forEach(function (u) { set[u] = 1; }); var n = 0; Object.keys(rule.byUnit || {}).forEach(function (u) { if (set[u]) n += rule.byUnit[u]; }); return n;
+  };
+  /** "Do these three today" for a unit: P1 cards past date > TMS entry gaps > hidden findings > overdue checks */
+  PE.threeToday = function (watch, units, W) {
+    W = W || {}; var set = {}; (units || []).forEach(function (u) { set[u] = 1; }); var inU = function (r) { return !units || set[r.unit || '?']; };
+    var get = function (id) { return (watch.rules || []).filter(function (r) { return r.id === id; })[0]; };
+    var today = watch.today; var out = [];
+    var a3 = get('A3'); if (a3 && a3.status === 'ready') (a3.records || []).filter(inU).filter(function (r) { var lim = r.p === 1 ? (W.p1Days || 3) : (W.p2Days || 7); return r.p === 1 && PE.daysBetween(r.d, today) > lim; }).sort(function (a, b) { return String(a.d).localeCompare(String(b.d)); }).slice(0, 3).forEach(function (r) {
+      out.push({ rank: 1, tag: 'P1 card', title: r.text.replace(/^P1 /, '') + ' – ' + r.lid + ' ' + PE.fmtKm(r.km, r.m), why: 'Raised ' + r.d + ', still open in TMS after ' + PE.daysBetween(r.d, today) + ' days.', go: { view: 'loc', arg: r.lid + '|' + r.km + '|' + (r.m || 0) }, btn: 'Open the place' });
+    });
+    var b4 = get('B4'); if (b4 && b4.status === 'ready') { var g = (b4.records || []).filter(inU); if (g.length) out.push({ rank: 2, tag: 'Enter in TMS', title: g.length + ' work' + (g.length > 1 ? 's' : '') + ' done, not in TMS', why: g.slice(0, 2).map(function (r) { return r.text.split(' – ')[0] + ' (' + r.d + ')'; }).join(' and ') + ' – in Field Mini Control with proof, no TMS work site.', go: { view: 'reg', arg: 'sheet only' }, btn: 'See the works' }); }
+    ['H1', 'H2', 'H5', 'H4'].forEach(function (id) { var h = get(id); if (!h || h.status !== 'ready') return; (h.records || []).filter(inU).slice(0, 1).forEach(function (r) { out.push({ rank: 3, tag: 'Hidden · ' + h.en, title: r.title + (r.lid ? ' – ' + r.lid + ' ' + PE.fmtKm(r.km, r.m) : ''), why: r.seen, go: r.lid ? { view: 'loc', arg: r.lid + '|' + r.km + '|' + (r.m || 0) } : { view: 'ov' }, btn: 'See the evidence' }); }); });
+    var b1 = get('B1'); if (b1 && b1.status === 'ready') (b1.records || []).filter(inU).sort(function (a, b) { return b.n - a.n; }).slice(0, 1).forEach(function (r) { out.push({ rank: 4, tag: 'Overdue check', title: 'Not recorded: ' + r.lid + ' km ' + PE.fmtKm(r.km, r.m) + ' – ' + PE.fmtKm(r.km2, r.m2), why: r.text + ' (' + (Math.round(r.n * 0.2 * 10) / 10) + ' km).', go: { view: 'loc', arg: r.lid + '|' + r.km + '|' + (r.m || 0) }, btn: 'Open the place' }); });
+    out.sort(function (a, b) { return a.rank - b.rank; });
+    return out;
+  };
+  /** is a data source older than its schedule? -> its date, else null */
+  PE.staleDate = function (watch, src, nowIso) {
+    var at = (watch.dataAt || {})[src]; var lim = (watch.freshDays || {})[src]; if (!at || !lim) return null;
+    return PE.daysBetween(String(at).slice(0, 10), String(nowIso || watch.today).slice(0, 10)) > lim ? String(at).slice(0, 10) : null;
+  };
+})(PE);
+

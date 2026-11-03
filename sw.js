@@ -1,6 +1,6 @@
 // Keeps the portal app on the device so it opens without signal (copied from TMS Control's sw.js 02-Nov-2026; own cache names hwhtp-*, never touches other apps' caches on the same github.io origin). Data calls are never cached here.
-const VERSION = '202611030922';
-const SHELL = ["./","index.html","styles.css","config.js","store.js","ui.js","engine.js","app.js","loc.js","register.js","admin.js","manifest.webmanifest","icons/logo.png","icons/icon-192.png"];
+const VERSION = '202611031030';
+const SHELL = ["./","index.html","styles.css","config.js","store.js","ui.js","engine.js","app.js","loc.js","register.js","admin.js","front.js","manifest.webmanifest","icons/logo.png","icons/icon-192.png"];
 self.addEventListener('install', e => { e.waitUntil(caches.open('hwhtp-' + VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k.indexOf('hwhtp-') === 0 && k !== 'hwhtp-' + VERSION).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', e => {

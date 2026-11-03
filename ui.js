@@ -80,8 +80,8 @@ function ring(v, max, o = {}) {
 
 // ---------- theme, glass, language ----------
 const mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
-function themePref() { return LS.get('hwhtp.theme') || 'auto'; }
-function applyTheme() { const p = themePref(); const dark = p === 'dark' || (p === 'auto' && mq && mq.matches); root.setAttribute('data-theme', dark ? 'dark' : 'light'); const m = document.querySelector('meta[name=theme-color]'); if (m) m.setAttribute('content', dark ? '#000000' : '#F2F2F7'); drawTools(); }
+function themePref() { return LS.get('hwhtp.theme') || 'light'; }   // [PB] B3: light is the default
+function applyTheme() { const p = themePref(); const dark = p === 'dark' || (p === 'auto' && mq && mq.matches); root.setAttribute('data-theme', dark ? 'dark' : 'light'); const m = document.querySelector('meta[name=theme-color]'); if (m) m.setAttribute('content', dark ? '#0E0D2B' : '#2D2A6E'); drawTools(); }
 function setTheme(p) { LS.set('hwhtp.theme', p); applyTheme(); }
 if (mq && mq.addEventListener) mq.addEventListener('change', applyTheme);
 // glass: off on weak phones (≤ 2 GB memory) or when switched off on this device

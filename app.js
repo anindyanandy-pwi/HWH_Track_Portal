@@ -95,8 +95,19 @@ function navs() {
   return [['ov', 'Overview'], ['home', 'Three things'], ['loc', 'Location card'], ['reg', 'Work register']].concat(A ? [['#Admin'], ['load', 'Load TMS data'], ['rules', 'Watch rules'], ['fmc', 'Read Field Mini Control'], ['feed', 'Feed status'], ['links', 'Viewer links'], ['settings', 'Settings'], ['status', 'Version check']] : []);
 }
 function drawNav() {
-  $('nav').innerHTML = navs().map(x => x[0][0] === '#' ? `<div class="navgrp">${UI.t(x[0].slice(1))}</div>` : `<button data-k="${x[0]}" class="${x[0] === S.view ? 'on' : ''}">${UI.navIcon(x[0])}${(b => `<span class="nl"><span class="p">${b.p}</span>${b.s ? `<span class="s">${b.s}</span>` : ''}</span>`)(B(x[1]))}<span class="cnt"></span></button>`).join('');
+  // [PB] B3: on a phone the bottom menu shows the four main pages + "More" (admin pages, language, theme); on a PC the side menu shows all
+  const MAIN = { ov: 1, home: 1, loc: 1, reg: 1 }; let grp = false;
+  $('nav').innerHTML = navs().map(x => { if (x[0][0] === '#') { grp = true; return `<div class="navgrp">${UI.t(x[0].slice(1))}</div>`; } return `<button data-k="${x[0]}" class="${x[0] === S.view ? 'on' : ''}${MAIN[x[0]] ? '' : ' admin-item'}">${UI.navIcon(x[0])}${(b => `<span class="nl"><span class="p">${b.p}</span>${b.s ? `<span class="s">${b.s}</span>` : ''}</span>`)(B(x[1]))}<span class="cnt"></span></button>`; }).join('')
+    + `<button class="more${MAIN[S.view] ? '' : ' on'}" id="navMore">${UI.navIcon('settings')}<span class="nl"><span class="p">${UI.lang() === 'hi' ? 'और' : 'More'}</span></span></button>`;
   $('nav').querySelectorAll('button[data-k]').forEach(b => b.onclick = () => go(b.dataset.k));
+  $('navMore').onclick = () => {
+    const rest = navs().filter(x => x[0][0] !== '#' && !MAIN[x[0]]);
+    modal(`<h3 style="margin:0 0 10px">${UI.lang() === 'hi' ? 'और' : 'More'}</h3><div class="moresheet">${rest.map(x => `<button data-mk="${x[0]}" class="${x[0] === S.view ? 'on' : ''}">${esc(B(x[1]).p)}${B(x[1]).s ? ` <span class="small muted">${esc(B(x[1]).s)}</span>` : ''}</button>`).join('')}</div><div id="moreTools" style="margin-top:12px"></div>`);
+    $('moreTools').innerHTML = `<div class="moresheet" style="grid-template-columns:1fr 1fr"><button data-ml="en">English</button><button data-ml="hi">हिन्दी</button><button data-mt="light">${UI.lang() === 'hi' ? 'हल्का' : 'Light'}</button><button data-mt="dark">${UI.lang() === 'hi' ? 'गहरा' : 'Dark'}</button></div>`;
+    $('moreTools').querySelectorAll('[data-ml]').forEach(b => b.onclick = () => { closeModal(); UI.setLang(b.dataset.ml); });
+    $('moreTools').querySelectorAll('[data-mt]').forEach(b => b.onclick = () => { closeModal(); UI.setTheme(b.dataset.mt); });
+    document.querySelectorAll('#modalBody [data-mk]').forEach(b => b.onclick = () => { closeModal(); go(b.dataset.mk); });
+  };
 }
 function go(k, arg) { S.view = k; S.arg = arg; try { history.replaceState(null, '', '#' + k + (arg ? '/' + encodeURIComponent(arg) : '')); } catch (e) { } render(); }
 function render() {

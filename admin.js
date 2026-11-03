@@ -108,6 +108,14 @@ async function run(force) {
         const parts = []; for (const f of p.files) parts.push(await readJson(kind + '/' + f));
         const F = PE.combineParts(parts); F.pressId = F.pressId || p.pressId;
         const sl = PE.slimPress(kind, F, { N, L, recentFrom });
+        // [PB] B3: an empty press never replaces earlier good data – nothing is written, the press is only marked as read
+        if (!sl.count && kind !== 'blockSections') {
+          const good = (((H.S.boot || {}).loaded || {})[kind] || []).filter(x => x.complete && !(x.summary && x.summary.empty) && (x.rows || (x.summary && x.summary.count))).pop();
+          const kept = good ? String(good.pressAt || good.at || good.pressId).slice(0, 10) : '—';
+          say(`   latest press was empty (0 records${F.counts ? ' – the collector says ' + JSON.stringify(F.counts) : ''}) – kept data of ${kept}`);
+          await call('ingest', { kind, pressId: p.pressId, at: p.at, part: 1, parts: 1, files: [], summary: { count: 0, empty: true, keptFrom: kept, tms: F.counts || null }, force });
+          results.push({ kind, pressId: p.pressId, count: 0, empty: true, kept }); continue;
+        }
         if (kind === 'blockSections') say(`   ${sl.count} block sections in TMS's mapping – ${sl.extra.located} tied to a TMS section-line and km, ${sl.extra.notInTms} not in TMS. This is the LOCATING TABLE (used to place other records), not events.`);
         else if (kind === 'machineProg') { const h = {}; Object.values(sl.byGroup).flat().forEach(x => { const k = x.approx ? (x.how === 'section' ? 'section only' : 'block section / station only') : 'exact km'; h[k] = (h[k] || 0) + 1; }); say(`   ${sl.count} machine days with work: ${Object.entries(h).map(([k, v]) => v + ' ' + k).join(', ')}${sl.unlocated ? ', ' + sl.unlocated + ' not placed' : ''} (OHE masts in the remarks kept for the mast list)`); }
         else say(`   ${sl.count} records, ${sl.located} placed on a section-line, ${sl.unlocated} not placed${sl.unlocatedSample[0] ? ' (e.g. ' + JSON.stringify(sl.unlocatedSample[0]).slice(0, 160) + ')' : ''}`);
@@ -236,7 +244,8 @@ VIEWS.status = async (el) => {
   let st; try { st = await call('status'); } catch (e) { $('vsBox').textContent = e.error; return; }
   const web = (H.CFG.VERSION || ''), srv = st.build;
   const okW = !site || site.web === web, okS = !site || !site.server || site.server === srv;
-  const kinds = Object.entries(st.kinds || {}).map(([k, v]) => `<tr><td>${esc(PE.KIND_LABEL[k] || k)}</td><td>${v.files}</td><td>${Number(v.rows).toLocaleString('en-IN')}${v.allRows ? `<div class="small muted">+ ${Number(v.allRows).toLocaleString('en-IN')} in the division-wide recent copy (same records, kept for the work register)</div>` : ''}</td><td class="small">${esc(v.presses.slice(-3).join(', '))}</td><td class="small">${v.groups.filter(g => g !== '_all').length || 1}</td></tr>`).join('');
+  const emptyNote = k => { const L = ((st.loaded || {})[k] || []).filter(x => x.complete); const last = L[L.length - 1]; return last && last.summary && last.summary.empty ? `<div class="small" style="color:var(--warn)">latest press ${esc(last.pressId)} was empty – kept data of ${esc(last.summary.keptFrom || '—')}</div>` : ''; };
+  const kinds = Object.entries(st.kinds || {}).map(([k, v]) => `<tr><td>${esc(PE.KIND_LABEL[k] || k)}${emptyNote(k)}</td><td>${v.files}</td><td>${Number(v.rows).toLocaleString('en-IN')}${v.allRows ? `<div class="small muted">+ ${Number(v.allRows).toLocaleString('en-IN')} in the division-wide recent copy (same records, kept for the work register)</div>` : ''}</td><td class="small">${esc(v.presses.slice(-3).join(', '))}</td><td class="small">${v.groups.filter(g => g !== '_all').length || 1}</td></tr>`).join('');
   $('vsBox').outerHTML = panel('Program', `<div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))"><div class="kpi ${okW ? 'ok' : 'crit'}"><div class="l">This website</div><div class="v" style="font-size:18px">${esc(web)}</div><div class="s">${okW ? 'latest published' : 'a newer version ' + esc(site.web) + ' is published – reload the page'}</div></div><div class="kpi ${okS ? 'ok' : 'crit'}"><div class="l">Server program</div><div class="v" style="font-size:18px">${esc(srv || '—')}</div><div class="s">${okS ? 'matches this website' : 'the website expects ' + esc(site.server) + ' – run push.bat'}</div></div></div>
     <div class="small" style="margin-top:8px">Server address: <code>${esc(st.execUrl || '')}</code> · triggers: ${esc((st.triggers || []).join(', ') || 'none')}</div>`) +
     panel('Data held', kinds ? `<div class="scroll"><table class="t compact"><thead><tr><th>Kind</th><th>Files</th><th>Records</th><th>Last presses</th><th>Sections</th></tr></thead><tbody>${kinds}</tbody></table></div>` : '<div class="muted">Nothing loaded yet – Load TMS data.</div>') +

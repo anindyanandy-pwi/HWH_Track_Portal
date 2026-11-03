@@ -17,7 +17,7 @@ VIEWS.reg = async (el) => {
       fmc.forEach(r => PE.lineType(r, 'fmc', N)); ws.forEach(r => PE.lineType(r, 'workSite', N));
       const cov = {}; Object.entries((H.S.boot && H.S.boot.fmc && H.S.boot.fmc.coverage) || {}).forEach(([d, v]) => { cov[d] = v; });
       const pk = PE.buildPackages(fmc, ws, { ac: merge(fl, 'assetChange', '_all'), mp: merge(fl, 'machineProg', '_all'), fw: feed.work || [], sc: merge(fl, 'spotCards', '_all') }, { S: H.settings(), N, coverage: cov });
-      pk.forEach(p => { const t = p.fmc ? p.fmc.ltp : p.ws[0] ? p.ws[0].ltp : null; p.lt = t; });
+      pk.forEach(p => { const t = p.fmc ? p.fmc.ltp : p.ws[0] ? p.ws[0].ltp : null; p.lt = t; p.ls = p.fmc ? p.fmc.ltsub : p.ws[0] ? p.ws[0].ltsub : ''; });
       REG = { pk, fmc, ws, units: feed.units || [], days: merge(fl.filter(f => f.kind === 'fmcDays'), 'fmcDays') };
     }
     draw($('regBox'));
@@ -27,7 +27,7 @@ VIEWS.reg.clear = () => { REG = null; };
 const F = { unit: '', type: '', out: '', from: '', to: '', q: '', lt: null };
 const LTN = { main: 'Main line', loop: 'Loop lines', all: 'All lines' };
 const ltOk = (p, v) => v === 'all' || (v === 'main' ? p.lt === 'main' : v === 'loop' ? (p.lt === 'loop' || p.lt === 'siding') : v === 'unknown' ? !p.lt : true);
-const ltTagR = t => `<span class="tag ${t === 'main' ? 't3' : t ? 't2' : 't1'}">${t ? PE.LT_TAG[t] : 'type?'}</span>`;
+const ltTagR = (t, sub) => `<span class="tag ${t === 'main' ? 't3' : t ? 't2' : 't1'}">${t ? PE.LT_TAG[t] : 'type?'}</span>${sub ? ` <span class="tag t3">${sub}</span>` : ''}`;
 function draw(box) {
   const P = REG.pk; const units = [...new Set(P.map(p => p.u).filter(Boolean))].sort();
   const firstSheet = REG.fmc.map(r => r.date).sort()[0];
@@ -49,7 +49,7 @@ function draw(box) {
     <div class="small muted" style="margin-top:4px">Counts · ${esc(F.lt === 'unknown' ? 'line type unknown' : LTN[F.lt].toLowerCase())}</div>
     ${F.unit ? dayStrip(F.unit) : ''}
     <details style="margin-top:6px"><summary class="small">Per unit – gaps and missing proof (${C.length} units)</summary><div class="scroll"><table class="t compact"><thead><tr><th>Unit</th><th>Packages</th><th>Matched</th><th>Sheet only (TMS gap)</th><th>TMS only (no proof)</th><th>Not checked</th><th>Sheet records lacking certificates / photos</th></tr></thead><tbody>${C.map(u => `<tr data-u="${esc(u.unit)}" style="cursor:pointer"><td><b>${esc(u.unit)}</b></td><td>${u.total}</td><td>${u.matched}</td><td>${u['sheet only'] ? `<b class="od">${u['sheet only']}</b>` : 0}</td><td>${u['tms only']}</td><td class="muted">${u['not checked']}</td><td>${u.proofMissing}</td></tr>`).join('')}</tbody></table></div></details>
-    <div class="scroll" style="margin-top:8px"><table class="t compact"><thead><tr><th>Date</th><th>Unit</th><th>Outcome</th><th>Work</th><th>Where</th><th>Sheet proof</th><th>Also here</th></tr></thead><tbody>${view.slice(0, 500).map((p, i) => `<tr data-i="${P.indexOf(p)}" style="cursor:pointer"><td class="nw">${dmy(p.date)}</td><td>${esc(p.u || '')}</td><td><span class="tag ${OUT[p.outcome][1]}">${esc(UI.t(p.outcome))}</span> ${ltTagR(p.lt)}</td><td class="wrap">${esc(p.type || '')}${p.ws.length > 1 ? ` <span class="small muted">+${p.ws.length - 1} TMS</span>` : ''}</td><td class="small">${p.lid ? esc(p.lid) + ' ' + PE.fmtKm(p.km, p.m) + (p.approx ? ' <span class="tag t3">approx</span>' : '') : `<span class="muted">${esc(p.fmc && p.fmc.where ? p.fmc.where.note || 'not located' : 'not located')}</span>`}</td><td class="small">${p.fmc ? proofCell(p.fmc) : '<span class="od">none</span>'}</td><td class="small">${att(p)}</td></tr>`).join('')}</tbody></table></div>${view.length > 500 ? `<div class="pager">${view.length} packages – first 500 shown; narrow the filter</div>` : `<div class="pager">${view.length} package(s)</div>`}
+    <div class="scroll" style="margin-top:8px"><table class="t compact"><thead><tr><th>Date</th><th>Unit</th><th>Outcome</th><th>Work</th><th>Where</th><th>Sheet proof</th><th>Also here</th></tr></thead><tbody>${view.slice(0, 500).map((p, i) => `<tr data-i="${P.indexOf(p)}" style="cursor:pointer"><td class="nw">${dmy(p.date)}</td><td>${esc(p.u || '')}</td><td><span class="tag ${OUT[p.outcome][1]}">${esc(UI.t(p.outcome))}</span> ${ltTagR(p.lt, p.ls)}</td><td class="wrap">${esc(p.type || '')}${p.ws.length > 1 ? ` <span class="small muted">+${p.ws.length - 1} TMS</span>` : ''}</td><td class="small">${p.lid ? esc(p.lid) + ' ' + PE.fmtKm(p.km, p.m) + (p.approx ? ' <span class="tag t3">approx</span>' : '') : `<span class="muted">${esc(p.fmc && p.fmc.where ? p.fmc.where.note || 'not located' : 'not located')}</span>`}</td><td class="small">${p.fmc ? proofCell(p.fmc) : '<span class="od">none</span>'}</td><td class="small">${att(p)}</td></tr>`).join('')}</tbody></table></div>${view.length > 500 ? `<div class="pager">${view.length} packages – first 500 shown; narrow the filter</div>` : `<div class="pager">${view.length} package(s)</div>`}
   </div></div>`;
   const re = () => draw(box);
   $('fU').onchange = e => { F.unit = e.target.value; re(); }; $('fT').onchange = e => { F.type = e.target.value; re(); }; $('fO').onchange = e => { F.out = e.target.value; re(); };

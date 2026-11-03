@@ -139,10 +139,13 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
 var PE = (typeof PE !== 'undefined' && PE) || {};
 (function (PE) {
   'use strict';
-  var LT = { siding: [], loop: [], ask: [] };
+  var LT = { siding: [], loop: [], ask: [], main: [] };
   var rx = function (a) { return (a || []).map(function (w) { return new RegExp(w, 'i'); }); };
   /** settings.lineType: {siding: [regex…], loop: [regex…], ask: [regex…]} – ask = names the program must not decide (avoiding / fly-over lines …) */
-  PE.setLineTypes = function (o) { o = o || {}; LT = { siding: rx(o.siding), loop: rx(o.loop), ask: rx(o.ask) }; };
+  PE.setLineTypes = function (o) { o = o || {}; LT = { siding: rx(o.siding), loop: rx(o.loop), ask: rx(o.ask), main: (o.mainNamed || []).map(function (x) { return { tag: x.tag, re: new RegExp(x.re, 'i') }; }) }; };
+  // [PB] B2a: P&C register (TMS asset changes "pnx": station, point no., line, km, line type) – decides P&C spot cards
+  var PNX = null; var pkey = function (x) { return String(x || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); };
+  PE.setPnx = function (list) { if (!list || !list.length) { PNX = null; return; } PNX = {}; (list || []).forEach(function (p) { if (!p || p.km == null) return; var k = pkey(p.to || p.turnout); if (!k) return; (PNX[k] = PNX[k] || []).push(p); }); };
   var any = function (L, s) { for (var i = 0; i < L.length; i++) if (L[i].test(s)) return L[i].source; return null; };
   // running-line keys of a TMS section-line (core.js lineKey): UP, DN, UP1…, DN2…, Rev, Single, Up / Dn Chord, 3rd Line
   var RUNNING = /^(UP|DN|UP\d|DN\d|REV|SL|UPCH|DNCH|3RD)$/;
@@ -150,6 +153,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   /** by a line NAME alone: {t, src} | null */
   PE.lineTypeByName = function (name) {
     var s = String(name || '').trim(); if (!s) return null;
+    for (var i = 0; i < LT.main.length; i++) if (LT.main[i].re.test(s)) return { t: 'main', sub: LT.main[i].tag, src: 'line name "' + s + '" = ' + LT.main[i].tag + ' (main line, settings.lineType.mainNamed)' };
     var a = any(LT.ask, s); if (a) return { t: null, src: 'line name "' + s + '" – not decided (rule /' + a + '/ in settings.lineType.ask)' };
     if (any(LT.siding, s)) return { t: 'siding', src: 'line name "' + s + '"' };
     if (any(LT.loop, s)) return { t: 'loop', src: 'line name "' + s + '"' };
@@ -161,7 +165,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     var g = N ? N.groupOf(lid) : '_other'; var line = g && g.charAt(0) !== '_' ? String(lid).slice(g.length + 1) : String(lid).replace(/^\S+\s/, '');
     var k = N ? N.lineKey(line) : line.toUpperCase();
     if (PE.isRunningKey(k)) return { t: 'main', src: 'TMS section-line (running line)' };
-    var b = PE.lineTypeByName(line); if (b) return { t: b.t, src: 'TMS section-line, ' + b.src };
+    var b = PE.lineTypeByName(line); if (b) return { t: b.t, sub: b.sub, src: 'TMS section-line, ' + b.src };
     return { t: null, src: 'TMS line "' + line + '" not recognised' };
   };
   /** a field line text (Field Mini Control, machine progress "YD", "UP LOOP", "DN/ML", "SDG") -> {t, src} */
@@ -174,16 +178,16 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   /** one record of a stored kind -> {t, src}; cached on the record as r.ltp / r.ltps */
   PE.lineType = function (r, kind, N) {
     if (!r) return { t: null, src: '' };
-    if (r.ltp !== undefined) return { t: r.ltp, src: r.ltps };
+    if (r.ltp !== undefined) return { t: r.ltp, src: r.ltps, sub: r.ltsub };
     var o;
     if (kind === 'pnx' || r.k === 'pnx') {   // TMS asset register P&C line type ("Main Line" / "Loop Line") + the line name
       var nm = PE.lineTypeByName(r.ln); var f = String(r.lt || '').toLowerCase();
-      o = nm && nm.t === 'siding' ? { t: 'siding', src: 'asset register "' + r.lt + '", ' + nm.src } : /main/.test(f) ? { t: 'main', src: 'asset register line type "Main Line"' } : /loop/.test(f) ? { t: 'loop', src: 'asset register line type "Loop Line"' } : nm || { t: null, src: 'asset register line type not given' };
+      o = nm && nm.t === 'main' && nm.sub ? nm : nm && nm.t === 'siding' ? { t: 'siding', src: 'asset register "' + r.lt + '", ' + nm.src } : /main/.test(f) ? { t: 'main', src: 'asset register line type "Main Line"' } : /loop/.test(f) ? { t: 'loop', src: 'asset register line type "Loop Line"' } : nm || { t: null, src: 'asset register line type not given' };
     } else if (kind === 'ballast' || kind === 'ballastCushion') {
       if (r.lid) o = PE.lineTypeOfLid(r.lid, N);
       else {
         var y = PE.lineTypeByName(r.yl);
-        if (y) o = { t: y.t, src: 'ballast register, station ' + r.stn + ' yard, ' + y.src };
+        if (y) o = { t: y.t, sub: y.sub, src: 'ballast register, station ' + r.stn + ' yard, ' + y.src };
         else if (!String(r.yl || '').trim() && r.xo) o = { t: 'loop', src: 'ballast register, station ' + r.stn + ' yard crossover ' + r.xo };
         else if (/^\s*(line\s*no\.?\s*\d|\d+\s*$|pf\b|platform|yard\s*line|rl\s*\d|line\s*\d)/i.test(r.yl || '')) o = { t: 'loop', src: 'ballast register, station ' + r.stn + ' yard line "' + r.yl + '" (numbered yard line – not a section running line)' };
         else o = { t: null, src: 'ballast register, station ' + r.stn + ' yard line "' + (r.yl || '') + '" not recognised' };
@@ -195,11 +199,22 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     } else if (kind === 'workSite') {
       var k = N ? N.lineKey(r.ln) : null;
       o = PE.isRunningKey(k) ? { t: 'main', src: 'TMS work site on section-line ' + (r.ln || '') } : (PE.lineTypeByName(r.ln) || { t: null, src: 'TMS work site line "' + (r.ln || '') + '" not recognised' });
+    } else if ((kind === 'spotCards' || kind === 'card') && /X-?ING/i.test(r.it || '') && PNX) {
+      // P&C card: TMS hangs every card on a section-line km – a yard turnout looks like main line. The P&C register decides.
+      var g0 = N ? N.groupOf(r.lid) : ''; var cl = N && r.lid ? N.lineKey(String(r.lid).slice(g0.length + 1)) : '';
+      var pos = (+r.km || 0) + (+r.m || 0) / 1000;
+      var cand = (PNX[pkey(r.an)] || []).filter(function (p) { return Math.abs((+p.km || 0) + (+p.m || 0) / 1000 - pos) <= 1; });
+      var same = cand.filter(function (p) { return N && N.lineKey(p.ln) === cl; }); if (same.length) cand = same;
+      var ts = {}; cand.forEach(function (p) { var q = PE.lineType(Object.assign({}, p, { ltp: undefined }), 'pnx', N); ts[q.t || 'unknown'] = q; });
+      var tk = Object.keys(ts);
+      o = !cand.length ? { t: null, src: 'P&C card, point ' + r.an + ' not in the P&C register near km ' + r.km }
+        : tk.length === 1 && tk[0] !== 'unknown' ? { t: ts[tk[0]].t, sub: ts[tk[0]].sub, src: 'P&C register: point ' + r.an + ' at ' + cand[0].stn + ', ' + cand[0].ln + ' (' + cand[0].lt + ')' }
+        : { t: null, src: 'P&C card, point ' + r.an + ': the register has it on ' + tk.join(' and ') + ' lines near km ' + r.km };
     } else if (kind === 'machineProg') {
       o = PE.lineTypeOfText(r.ln, N); if (o.t) o.src = 'TMS machine progress ' + o.src;
     } else if (r.lid) o = PE.lineTypeOfLid(r.lid, N);
     else o = { t: null, src: 'no line given' };
-    try { r.ltp = o.t; r.ltps = o.src; } catch (e) { }
+    try { r.ltp = o.t; r.ltps = o.src; r.ltsub = o.sub || ''; } catch (e) { }
     return o;
   };
   PE.LT_LABEL = { main: ['Main line', 'मुख्य लाइन'], loop: ['Loop lines', 'लूप लाइन'], all: ['All lines', 'सभी लाइन'] };
@@ -1172,6 +1187,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
 
   // ---------------------------------------------------------------- the registry
   var ltOfPk = function (p) { return p.fmc ? p.fmc.ltp : p.ws && p.ws[0] ? p.ws[0].ltp : null; };
+  var lsOfPk = function (p) { return p.fmc ? p.fmc.ltsub : p.ws && p.ws[0] ? p.ws[0].ltsub : ''; };
   PE.WATCH_RULES = [];
   PE.addWatchRule = function (r) { PE.WATCH_RULES = PE.WATCH_RULES.filter(function (x) { return x.id !== r.id; }); PE.WATCH_RULES.push(r); return r; };
   var R = PE.addWatchRule;
@@ -1194,21 +1210,21 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       var since = PE.addDays(X.today, -365);
       var L = X.cards.filter(function (c) { return c.st === 'closed' && c.act !== undefined && !c.act && (c.cmp || c.d16 || c.d) >= since; });
       var months = lastMonths(X.today, 12);
-      return { records: L.map(function (c) { return { lid: c.lid, km: c.km, m: c.m, unit: c.u, d: c.cmp || c.d16, text: c.src + ' card "' + c.ob + '" closed ' + (c.cmp || c.d16) + ' – action blank', id: c.id }; }), count: L.length, unitOf: function (r) { return r.unit; },
+      return { records: L.map(function (c) { return { lid: c.lid, km: c.km, m: c.m, unit: c.u, lt: c.ltp, ls: c.ltsub, d: c.cmp || c.d16, text: c.src + ' card "' + c.ob + '" closed ' + (c.cmp || c.d16) + ' – action blank', id: c.id }; }), count: L.length, unitOf: function (r) { return r.unit; },
         monthly: months.map(function (ym) { return [ym, L.filter(function (c) { return monthOf(c.cmp || c.d16) === ym; }).length]; }), note: X.detailShare < 1 ? 'only cards whose details are fetched (' + Math.round(X.detailShare * 100) + ' %)' : '', dataOf: ['tms'] };
     } });
   // B4 – done, not in TMS
   R({ id: 'B4', group: 'B', en: 'Done, not in TMS', hi: 'कार्य हुआ, TMS में नहीं', rule: 'Field Mini Control work with proof, no matching TMS work site (date ± 1 day, unit, line, km)', needs: ['fmc', 'workSite'], thresholds: [], unitText: 'works',
     run: function (X) {
       var L = X.pk.filter(function (p) { return p.outcome === 'sheet only'; });
-      return { records: L.map(function (p) { return { lid: p.lid, km: p.km, m: p.m, approx: p.approx, unit: p.u, d: p.date, lt: ltOfPk(p), text: (p.type || 'work') + ' – ' + (p.fmc && p.fmc.bs || '') + ' ' + (p.fmc && p.fmc.line || '') + ' – in Field Mini Control, not in TMS work sites', go: { view: 'reg', arg: 'sheet only' } }; }), count: L.length, unitOf: function (r) { return r.unit; },
+      return { records: L.map(function (p) { return { lid: p.lid, km: p.km, m: p.m, approx: p.approx, unit: p.u, d: p.date, lt: ltOfPk(p), ls: lsOfPk(p), text: (p.type || 'work') + ' – ' + (p.fmc && p.fmc.bs || '') + ' ' + (p.fmc && p.fmc.line || '') + ' – in Field Mini Control, not in TMS work sites', go: { view: 'reg', arg: 'sheet only' } }; }), count: L.length, unitOf: function (r) { return r.unit; },
         monthly: lastMonths(X.today, 12).map(function (ym) { return [ym, X.fmcCovered[ym] ? L.filter(function (p) { return monthOf(p.date) === ym; }).length : null]; }), dataOf: ['fmc', 'tms'] };
     } });
   // B5 – in TMS, no proof
   R({ id: 'B5', group: 'B', en: 'In TMS, no proof', hi: 'TMS में, प्रमाण नहीं', rule: 'TMS work site with no Field Mini Control proof, or proof without certificates / photos', needs: ['fmc', 'workSite'], thresholds: [], unitText: 'work sites',
     run: function (X) {
       var L = X.pk.filter(function (p) { return p.outcome === 'tms only' || (p.outcome === 'matched' && PE.proofMissing(p.fmc).length); });
-      return { records: L.map(function (p) { return { lid: p.lid, km: p.km, m: p.m, unit: p.u, d: p.date, lt: ltOfPk(p), text: (p.type || '') + (p.outcome === 'tms only' ? ' – no sheet proof' : ' – missing ' + PE.proofMissing(p.fmc).join(', ')), go: { view: 'reg', arg: p.outcome } }; }), count: L.length, unitOf: function (r) { return r.unit; },
+      return { records: L.map(function (p) { return { lid: p.lid, km: p.km, m: p.m, unit: p.u, d: p.date, lt: ltOfPk(p), ls: lsOfPk(p), text: (p.type || '') + (p.outcome === 'tms only' ? ' – no sheet proof' : ' – missing ' + PE.proofMissing(p.fmc).join(', ')), go: { view: 'reg', arg: p.outcome } }; }), count: L.length, unitOf: function (r) { return r.unit; },
         monthly: lastMonths(X.today, 12).map(function (ym) { return [ym, X.fmcCovered[ym] ? L.filter(function (p) { return monthOf(p.date) === ym; }).length : null]; }), dataOf: ['fmc', 'tms'] };
     } });
   // B6 – bad but untouched
@@ -1228,7 +1244,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       // ballast register data quality ([PB] B1a / B2): 0 or blank = data missing, never "deep screening needed"
       var other = [];
       var place = function (b) { return b.lid ? null : b.stn + ' yard, ' + (b.yl || 'line ?') + ' ' + PE.fmtKm(b.km, b.m) + '–' + PE.fmtKm(b.km2, b.m2); };
-      var add = function (b, txt) { other.push({ lid: b.lid, km: b.lid ? b.km : null, m: b.m, km2: b.lid ? b.km2 : null, m2: b.m2, where: place(b), unit: b.unit || '', lt: b.ltp, len: b.len, q: txt, text: (place(b) ? place(b) + ': ' : '') + txt + ' – TMS ballast register' }); };
+      var add = function (b, txt) { other.push({ lid: b.lid, km: b.lid ? b.km : null, m: b.m, km2: b.lid ? b.km2 : null, m2: b.m2, where: place(b), unit: b.unit || '', lt: b.ltp, ls: b.ltsub, len: b.len, q: txt, text: (place(b) ? place(b) + ': ' : '') + txt + ' – TMS ballast register' }); };
       X.ballast.forEach(function (b) {
         if (!(b.cc > 0)) add(b, 'clean cushion ' + (b.cc === 0 ? '0' : 'blank') + (b.scr ? ' (screened ' + b.scr + ')' : ''));
         else if (b.tc > 0 && b.cc > b.tc) add(b, 'clean cushion ' + b.cc + ' mm more than total ' + b.tc + ' mm');
@@ -1321,7 +1337,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       var U = L.filter(function (b) { return b.grade === 'urgent'; }), Pn = L.filter(function (b) { return b.grade === 'plan'; });
       return { records: L.map(function (b) {
           var where = b.lid ? null : b.stn + ' yard, ' + (b.yl || 'line ?') + (b.xo ? ' x-over ' + b.xo : '');
-          return { lid: b.lid, km: b.lid ? b.km : null, m: b.m, km2: b.lid ? b.km2 : null, m2: b.m2, where: where, unit: b.unit || '', lt: b.ltp, cc: b.cc, scr: b.scr, len: b.len, grade: b.grade,
+          return { lid: b.lid, km: b.lid ? b.km : null, m: b.m, km2: b.lid ? b.km2 : null, m2: b.m2, where: where, unit: b.unit || '', lt: b.ltp, ls: b.ltsub, cc: b.cc, scr: b.scr, len: b.len, grade: b.grade,
             text: (b.grade === 'urgent' ? 'URGENT · ' : 'plan · ') + (where ? where + ' ' + PE.fmtKm(b.km, b.m) + '–' + PE.fmtKm(b.km2, b.m2) + ': ' : '') + 'clean cushion ' + b.cc + ' mm' + (b.tc != null ? ' (total ' + b.tc + ')' : '') + ' · ' + (b.scr ? 'deep screened ' + b.scr + (b.how ? ' (' + b.how + ')' : '') : 'screening date missing in TMS') + (b.tc > 0 && b.cc > b.tc ? ' · clean > total – check' : '') + ' · source: TMS ballast register' };
         }), count: L.length, kmTotal: sum(L), extra: { urgent: U.length, plan: Pn.length, urgentKm: sum(U), planKm: sum(Pn), byUnit: L.reduce(function (o, b) { var u = b.unit || '?'; var x = o[u] = o[u] || { urgent: 0, plan: 0 }; x[b.grade]++; return o; }, {}) }, unitOf: function (r) { return r.unit; },
         note: (X.W.ballastNote ? X.W.ballastNote + ' · ' : '') + U.length + ' urgent (' + sum(U) + ' km) · ' + Pn.length + ' plan (' + sum(Pn) + ' km)', snapshot: true, dataOf: ['tms'] };
@@ -1341,7 +1357,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     run: function (X) {
       var L = X.cards.filter(function (c) { return c.st === 'open' && (+c.p === 1 || +c.p === 2); });
       var months = lastMonths(X.today, 12);
-      return { records: L.map(function (c) { return { lid: c.lid, km: c.km, m: c.m, unit: c.u, d: c.d, p: +c.p, text: 'P' + c.p + ' ' + c.src + ': ' + c.ob, id: c.id }; }), count: L.length, unitOf: function (r) { return r.unit; },
+      return { records: L.map(function (c) { return { lid: c.lid, km: c.km, m: c.m, unit: c.u, lt: c.ltp, ls: c.ltsub, d: c.d, p: +c.p, text: 'P' + c.p + ' ' + c.src + ': ' + c.ob, id: c.id }; }), count: L.length, unitOf: function (r) { return r.unit; },
         monthly: months.map(function (ym) { var e = monthEnd(ym); return [ym, X.cards.filter(function (c) { return (+c.p === 1 || +c.p === 2) && c.d && c.d <= e && (c.st === 'open' || (c.d16 && c.d16 > e)); }).length]; }), dataOf: ['tms'] };
     } });
   R({ id: 'A4', group: 'A', views: ['main', 'all'], en: 'Work that didn\'t hold', hi: 'कार्य जो टिका नहीं', rule: 'Same as H2: exact work with no TGI gain on the next run', needs: ['health'], thresholds: [],
@@ -1392,6 +1408,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
           e.byUnit = {}; (res.unitItems || res.cells || recs).forEach(function (x) { var u = x.unit || '?'; e.byUnit[u] = (e.byUnit[u] || 0) + (res.cells ? 1 : (x.n && r.id === 'H4' ? x.n : 1)); });
           if (r.id === 'H4') e.count = res.count;
           recs.forEach(function (x) { if (x.lt === undefined) x.lt = x.lid ? PE.lineTypeOfLid(x.lid, D.N).t : null; });
+          e.special = {}; recs.forEach(function (x) { if (x.ls) e.special[x.ls] = (e.special[x.ls] || 0) + 1; });   // [PB] B2a: "incl. N avoiding / fly-over"
           e.records = recs.slice(0, W.maxRecords || 400); e.more = Math.max(0, recs.length - e.records.length);
           e.monthly = res.monthly || null; e.snapshot = !!res.snapshot; e.note = res.note || ''; e.extra = res.extra || null; e.dataOf = res.dataOf || ['tms'];
         } catch (err) { e.status = 'error'; e.error = String(err && err.message || err); }
@@ -1451,11 +1468,13 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
    *  source); each view sees only its records (All = everything, unknown included); unknown ones are listed under B7 in every view.
    *  Returns the main-line view at the top level (older pages) + views {main, loop, all} + lineTypes (counts per kind). */
   PE.computeWatch = function (D) {
-    var N = D.N; var counts = {}; var unknown = [];
+    var N = D.N; var counts = {}; var unknown = []; var names = {};
+    if (D.pnx && PE.setPnx) PE.setPnx(D.pnx);
     var cls = function (list, kind, kindFn) {
       (list || []).forEach(function (r) {
         var k = kindFn ? kindFn(r) : kind; var o = PE.lineType(r, k, N); var c = counts[k] = counts[k] || { main: 0, loop: 0, siding: 0, unknown: 0, total: 0 };
-        c.total++; c[o.t || 'unknown']++;
+        c.total++; c[o.t || 'unknown']++; if (o.sub) c[o.sub] = (c[o.sub] || 0) + 1;
+        if (!o.t) { var nm = (o.src.match(/"([^"]+)"/) || [])[1] || o.src; var st = r.stn || (r.where && r.where.lid ? String(r.where.lid).split(' ')[0] : r.lid ? (N ? N.groupOf(r.lid) : '') : r.bs || ''); var key = k + '|' + st + '|' + nm; var x = names[key] = names[key] || { kind: k, station: st, name: nm, why: o.src.replace(/\d+(\.\d+)?/g, '#'), n: 0 }; x.n++; }
         if (!o.t && unknown.length < 3000) unknown.push({ kind: k, why: o.src, lid: r.lid || (r.where && r.where.lid) || null, km: r.km != null ? r.km : r.where && r.where.km, m: r.m != null ? r.m : r.where && r.where.m, unit: r.u || r.unit || '', where: r.stn ? r.stn + ' yard, ' + (r.yl || '') : (r.bs || null) });
       });
     };
@@ -1469,6 +1488,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       views[v] = PE.computeView(Dv); views[v].view = v;
     });
     var out = Object.assign({}, views.main); out.v = 2; out.views = views; out.lineTypes = counts; out.unknownSample = unknown.slice(0, 50);
+    out.unknownNames = Object.keys(names).map(function (k) { return names[k]; }).sort(function (a, b) { return b.n - a.n; }).slice(0, 600);
     return out;
   };
   /** the view of a stored watch file ('main' | 'loop' | 'all'); an old file (v1) has only the main-line-like top level */

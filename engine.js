@@ -601,14 +601,14 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       // line extents from the TMS chart). RDPS supports – it never overrides TMS. Points: [km, m, lat, lon, kind, label].
       var RT = (ctx.S && ctx.S.rdps && ctx.S.rdps.routes) || {}; var EX = ctx.extents || {}; var cov = {};
       (R.files || []).forEach(function (fl) {
-        var rt = RT[fl.file]; if (!rt) { extra.unmapped = (extra.unmapped || []).concat([fl.file]); return; }
+        var rt = RT[fl.file]; if (!rt) { extra.unmapped = (extra.unmapped || []).concat([fl.file]); rt = { sections: [], lines: [] }; }   // [C1] an unmapped survey file is still loaded (points not tied to a TMS line, listed)
         var lids = []; rt.sections.forEach(function (sc) { rt.lines.forEach(function (ln) { var l = lidOf(sc, ln); if (l && lids.indexOf(l) < 0) lids.push(l); }); });
         (fl.points || []).forEach(function (pt) {
           var P = PE.P(pt[0], pt[1]); var lid = null;
           for (var i = 0; i < lids.length && !lid; i++) { var e = EX[lids[i]]; if (e && P >= e[0] - 500 && P <= e[1] + 500) lid = lids[i]; }
           var r = { f: fl.file, lid: lid, km: pt[0], m: pt[1], la: pt[2], lo: pt[3], k: pt[4], t: pt[5] };
           count++; if (lid) { put(by, lid, r); var c = cov[lid] = cov[lid] || { n: 0, masts: 0, a: P, b: P, files: {} }; c.n++; if (pt[4] === 'mast') c.masts++; c.a = Math.min(c.a, P); c.b = Math.max(c.b, P); c.files[fl.file] = 1; }
-          else if (pt[4] !== 'kmpost') miss(r, 'km not on any TMS line of this route');
+          else if (pt[4] !== 'kmpost') miss(r, lids.length ? 'km not on any TMS line of this route' : 'survey file ' + fl.file + ' not mapped to TMS section-lines (Settings → rdps.routes)');
           if (pt[4] !== 'kmpost' && pt[4] !== 'other') all.push(pt[4] === 'mast' ? [lid || '', pt[0], pt[1], pt[2], pt[3], pt[4], pt[5]] : [lid || '', pt[0], pt[1], pt[2], pt[3], pt[4]]);   // mast label kept for the cross-check with the TMS mast list
         });
       });

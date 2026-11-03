@@ -104,6 +104,7 @@ async function run(force) {
       const row = PLAN.rows.find(r => r.kind === kind); if (!row || row.missing || row.error) continue;
       const presses = force && !row.fresh.length && row.last ? [row.last] : row.fresh;
       for (const p of presses) {
+        try {   // [C1] one step failing never stops the load: the error is reported and the next step runs
         say(`${PE.KIND_LABEL[kind]} – press of ${PE.pressLabel(p)}: reading ${p.files.length} file(s)…`);
         const parts = []; for (const f of p.files) parts.push(await readJson(kind + '/' + f));
         const F = PE.combineParts(parts); F.pressId = F.pressId || p.pressId;
@@ -128,9 +129,11 @@ async function run(force) {
         if (kind === 'spotCards' && sl.extra.assetIndex) await send('assetIndex', p.pressId, p.at, [{ group: '_all', rows: Object.keys(sl.extra.assetIndex).length, b64: await gzB64(JSON.stringify(sl.extra.assetIndex)) }], { count: Object.keys(sl.extra.assetIndex).length }, true, say);
         if (kind === 'blockSections') L = PE.locator(N, sl.all[0], null);
         results.push({ kind, pressId: p.pressId, count: sl.count, located: sl.located, unlocated: sl.unlocated, tms: sl.tmsCounts });
+        } catch (e) { say(`   ERROR in ${PE.KIND_LABEL[kind] || kind}: ${e.error || e.message || e} – this step skipped, carrying on with the next`); results.push({ kind, pressId: p.pressId, error: String(e.error || e.message || e) }); }
       }
     }
     if (PLAN.hFresh || force) {
+      try {
       say(`Track health: reading ${PLAN.charts.length} chart files + GMT…`);
       const charts = []; for (const n of PLAN.charts) charts.push(await readJson('Chart data/' + n));
       const gmt = PLAN.gmt ? PE.HE.parseGmt(await readJson('GMT/gmt_all_years.json'), N) : null;
@@ -143,12 +146,13 @@ async function run(force) {
       say(`   ${B.doc.lines.length} section-lines, ${cells} cells of 200 m, GMT for ${B.gmtLines} lines`);
       await send('health', pid, B.doc.at, files, summary, true, say);
       results.push({ kind: 'health', lines: B.doc.lines.length, cells });
+      } catch (e) { say(`   ERROR in Track health: ${e.error || e.message || e} – this step skipped, carrying on`); results.push({ kind: 'health', error: String(e.error || e.message || e) }); }
     }
     if (VIEWS.loc.clear) VIEWS.loc.clear(); if (VIEWS.reg.clear) VIEWS.reg.clear(); H.S.L = null;
     H.S.boot = await call('boot').catch(() => H.S.boot); ST.set('kv', H.BOOTKEY, H.S.boot).catch(() => { });
     // [PB] B1: the blind-spot watch (Overview / Three things) is computed again from the stored files
     if (H.watchUpdate) await H.watchUpdate(say).catch(e => say('   blind-spot watch not updated: ' + (e.error || e.message || e)));
-    say('Finished.'); toast('TMS data loaded');
+    const nErr = results.filter(r => r.error).length; say(nErr ? `Finished – ${nErr} step(s) with an error (see above); everything else was loaded.` : 'Finished.'); toast(nErr ? 'TMS data loaded – ' + nErr + ' step(s) with an error' : 'TMS data loaded');
     try { localStorage.setItem('hwhtp.lastLoad', JSON.stringify({ at: new Date().toISOString(), results })); } catch (e) { }
   } catch (e) { say('ERROR: ' + (e.error || e.message || e)); console.error(e); }
 }
@@ -219,7 +223,7 @@ VIEWS.links = async (el) => {
 async function copy(t) { try { await navigator.clipboard.writeText(t); toast('Copied'); } catch (e) { prompt('Copy the link', t); } }
 
 // ---------- settings ----------
-const FIELDS = [['web.appUrl', 'App address (GitHub Pages)', 'text'], ['feed.warnHours', 'Feed warning after (hours)', 'number'], ['feed.readHourIST', 'Daily feed read (hour IST)', 'number'], ['fmc.firstReadDays', 'First Field Mini Control read: days back', 'number'], ['fmc.overlapDays', 'Days read again each time (late entries)', 'number'], ['fmc.dailyHourIST', 'Daily sheet read (hour IST)', 'number'],
+const FIELDS = [['web.appUrl', 'App address (GitHub Pages)', 'text'], ['theme.darkFrom', 'Night mode (Auto) from – IST, hh:mm', 'text'], ['theme.darkTo', 'Night mode (Auto) until – IST, hh:mm', 'text'], ['feed.warnHours', 'Feed warning after (hours)', 'number'], ['feed.readHourIST', 'Daily feed read (hour IST)', 'number'], ['fmc.firstReadDays', 'First Field Mini Control read: days back', 'number'], ['fmc.overlapDays', 'Days read again each time (late entries)', 'number'], ['fmc.dailyHourIST', 'Daily sheet read (hour IST)', 'number'],
   ['match.dayTol', 'Work package: days apart allowed', 'number'], ['match.kmTolM', 'Work package: metres apart allowed', 'number'], ['match.cardDays', 'Card compliance: days around the work', 'number'], ['rules.tampMonths', 'Rule: tamping older than (months)', 'number'], ['rules.cleanCushionMm', 'Rule: plan deep screening when clean ballast cushion is below (mm)', 'number'], ['rules.backDays', 'Rule: defect back within (days after work)', 'number'], ['rules.noActionDays', 'Rule: no work within (days of card closing)', 'number'],
   ['watch.trcDays', 'Watch B1: TRC run needed every (days)', 'number'], ['watch.b6TgiBelow', 'Watch B6: TMS TGI below', 'number'], ['watch.b6Months', 'Watch B6: untouched for (months)', 'number'], ['watch.repeatCards', 'Watch H1: cards on how many dates', 'number'], ['watch.repeatMonths', 'Watch H1: within (months)', 'number'], ['watch.h2MinGain', 'Watch H2: least TGI gain after work', 'number'], ['watch.h2WindowDays', 'Watch H2: next run within (days)', 'number'], ['watch.p1Days', 'Three things: P1 card open longer than (days)', 'number'], ['watch.lifeWatch', 'Watch H5: share of GMT life', 'number'], ['watch.h5Fractures', 'Watch H5: weld fractures nearby', 'number']];
 const getp = (o, p) => p.split('.').reduce((a, k) => a == null ? a : a[k], o); const setp = (o, p, v) => { const k = p.split('.'); let a = o; k.slice(0, -1).forEach(x => { a = a[x] = a[x] && typeof a[x] === 'object' ? a[x] : {}; }); a[k[k.length - 1]] = v; };

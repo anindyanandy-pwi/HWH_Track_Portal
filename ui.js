@@ -80,10 +80,21 @@ function ring(v, max, o = {}) {
 
 // ---------- theme, glass, language ----------
 const mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
-function themePref() { return LS.get('hwhtp.theme') || 'light'; }   // [PB] B3: light is the default
-function applyTheme() { const p = themePref(); const dark = p === 'dark' || (p === 'auto' && mq && mq.matches); root.setAttribute('data-theme', dark ? 'dark' : 'light'); const m = document.querySelector('meta[name=theme-color]'); if (m) m.setAttribute('content', dark ? '#0E0D2B' : '#2D2A6E'); drawTools(); }
-function setTheme(p) { LS.set('hwhtp.theme', p); applyTheme(); }
-if (mq && mq.addEventListener) mq.addEventListener('change', applyTheme);
+// [C1] theme: "auto" (default) = dark from settings.theme.darkFrom to darkTo, India time (18:30–06:00), light otherwise; switches by itself while
+// the page is open. "light" / "dark" = the viewer's own choice, remembered on this device.
+let THEME_T = (((window.HWHTP_CONFIG || {}).SETTINGS || {}).theme) || { darkFrom: '18:30', darkTo: '06:00' };
+function setThemeTimes(t) { if (t && t.darkFrom && t.darkTo) { THEME_T = t; applyTheme(); } }
+function themePref() { const v = LS.get('hwhtp.theme'); return v === 'light' || v === 'dark' ? v : 'auto'; }
+const hmOf = s => { const m = String(s || '').match(/^(\d{1,2}):(\d{2})/); return m ? +m[1] * 60 + +m[2] : null; };
+function darkByTime(now) {
+  const d = now || new Date(); const ist = (d.getUTCHours() * 60 + d.getUTCMinutes() + 330) % 1440;   // India time, UTC + 5:30
+  const a = hmOf(THEME_T.darkFrom), b = hmOf(THEME_T.darkTo); if (a == null || b == null) return false;
+  return a <= b ? ist >= a && ist < b : ist >= a || ist < b;
+}
+function applyTheme() { const p = themePref(); const dark = p === 'dark' || (p === 'auto' && darkByTime()); root.setAttribute('data-theme', dark ? 'dark' : 'light'); root.setAttribute('data-theme-pref', p); const m = document.querySelector('meta[name=theme-color]'); if (m) m.setAttribute('content', dark ? '#0E0D2B' : '#2D2A6E'); drawTools(); }
+function setTheme(p) { LS.set('hwhtp.theme', p === 'light' || p === 'dark' ? p : 'auto'); applyTheme(); }
+setInterval(() => { if (themePref() === 'auto') { const want = darkByTime() ? 'dark' : 'light'; if (root.getAttribute('data-theme') !== want) applyTheme(); } }, 60000);
+const THEME_NAME = p => p === 'auto' ? `Auto (by time: dark ${THEME_T.darkFrom}–${THEME_T.darkTo} IST)` : p === 'dark' ? 'Dark' : 'Light';
 // glass: off on weak phones (≤ 2 GB memory) or when switched off on this device
 function applyGlass() { const pref = LS.get('hwhtp.glass'); const weak = (navigator.deviceMemory && navigator.deviceMemory <= 2); root.classList.toggle('noglass', pref === 'off' || (pref !== 'on' && weak)); }
 function langPref() { return LS.get('hwhtp.lang'); }
@@ -97,14 +108,15 @@ function drawTools() {
   const box = document.getElementById('uiTools'); if (!box) return;
   const l = LANG(), p = themePref();
   box.innerHTML = `<div class="seg" role="group" aria-label="Language"><button type="button" data-lang="en" class="${l === 'en' ? 'on' : ''}">EN</button><button type="button" data-lang="hi" class="${l === 'hi' ? 'on' : ''}">हिं</button></div>
-    <button type="button" class="tb icon" id="uiTheme" title="Appearance: ${p === 'auto' ? 'follows this device' : p}" aria-label="Appearance: ${p}">${svg(p === 'dark' ? 'moon' : p === 'light' ? 'sun' : 'auto')}</button>`;
+    <select class="tb" id="uiTheme" aria-label="Theme" title="Theme">${['auto', 'light', 'dark'].map(x => `<option value="${x}" ${x === p ? 'selected' : ''}>${x === 'auto' ? 'Auto (by time)' : x === 'dark' ? 'Dark' : 'Light'}</option>`).join('')}</select>`;
   box.querySelectorAll('[data-lang]').forEach(b => b.onclick = () => setLang(b.dataset.lang));
-  document.getElementById('uiTheme').onclick = () => setTheme(p === 'auto' ? 'light' : p === 'light' ? 'dark' : 'auto');
+  document.getElementById('uiTheme').onchange = e => setTheme(e.target.value);
+  document.getElementById('uiTheme').title = 'Theme: ' + THEME_NAME(p);
 }
 function about() {
   return `<div style="display:flex;gap:16px;align-items:center;margin-bottom:12px"><img src="${APP.logo}" alt="" style="width:64px;height:64px;object-fit:contain"><div><h3 style="margin:0">${APP.name}</h3><div class="muted">${APP.nameHi}</div><div class="small">${APP.org} · ${APP.orgHi}</div></div></div>${credit({ full: true })}`;
 }
 applyTheme(); applyGlass();
 document.addEventListener('DOMContentLoaded', () => { applyTheme(); drawTools(); });
-window.UI = { APP, credit, about, bi, t, title, hiOf, HI, ring, svg, navIcon, IC, setTheme, setLang, defaultLang, lang: LANG, applyGlass, esc };
+window.UI = { APP, credit, about, bi, t, title, hiOf, HI, ring, svg, navIcon, IC, setTheme, setThemeTimes, themePref, darkByTime, THEME_NAME, setLang, defaultLang, lang: LANG, applyGlass, esc };
 })();

@@ -106,7 +106,7 @@ function drawNav() {
   $('navMore').onclick = () => {
     const rest = navs().filter(x => x[0][0] !== '#' && !MAIN[x[0]]);
     modal(`<h3 style="margin:0 0 10px">${UI.lang() === 'hi' ? 'और' : 'More'}</h3><div class="moresheet">${rest.map(x => `<button data-mk="${x[0]}" class="${x[0] === S.view ? 'on' : ''}">${esc(B(x[1]).p)}${B(x[1]).s ? ` <span class="small muted">${esc(B(x[1]).s)}</span>` : ''}</button>`).join('')}</div><div id="moreTools" style="margin-top:12px"></div>`);
-    $('moreTools').innerHTML = `<div class="moresheet" style="grid-template-columns:1fr 1fr"><button data-ml="en">English</button><button data-ml="hi">हिन्दी</button><button data-mt="light">${UI.lang() === 'hi' ? 'हल्का' : 'Light'}</button><button data-mt="dark">${UI.lang() === 'hi' ? 'गहरा' : 'Dark'}</button><button data-mr="1" style="grid-column:1/-1">${UI.lang() === 'hi' ? 'नया डेटा लाएँ (रीफ़्रेश)' : 'Refresh – load the newest data'}</button></div>`;
+    $('moreTools').innerHTML = `<div class="moresheet" style="grid-template-columns:1fr 1fr"><button data-ml="en">English</button><button data-ml="hi">हिन्दी</button></div><div class="small muted" style="margin:10px 0 4px">${UI.lang() === 'hi' ? 'थीम' : 'Theme'}</div><div class="moresheet" style="grid-template-columns:1fr 1fr 1fr">${['auto', 'light', 'dark'].map(x => `<button data-mt="${x}" class="${UI.themePref() === x ? 'on' : ''}">${x === 'auto' ? (UI.lang() === 'hi' ? 'स्वतः (समय से)' : 'Auto (by time)') : x === 'dark' ? (UI.lang() === 'hi' ? 'गहरा' : 'Dark') : (UI.lang() === 'hi' ? 'हल्का' : 'Light')}</button>`).join('')}</div><div class="small muted" style="margin-top:4px">${esc(UI.THEME_NAME('auto'))}</div><div class="moresheet" style="margin-top:10px"><button data-mr="1">${UI.lang() === 'hi' ? 'नया डेटा लाएँ (रीफ़्रेश)' : 'Refresh – load the newest data'}</button></div>`;
     $('moreTools').querySelector('[data-mr]').onclick = () => { closeModal(); const r = $('btnReload'); if (r) r.click(); };
     $('moreTools').querySelectorAll('[data-ml]').forEach(b => b.onclick = () => { closeModal(); UI.setLang(b.dataset.ml); });
     $('moreTools').querySelectorAll('[data-mt]').forEach(b => b.onclick = () => { closeModal(); UI.setTheme(b.dataset.mt); });
@@ -144,7 +144,8 @@ async function start() {
   let saved = null; try { saved = await ST.get('kv', BOOTKEY); } catch (e) { }
   const fresh = call('boot').then(b => { ST.set('kv', BOOTKEY, b).catch(() => { }); return b; });
   S.boot = saved || await fresh.catch(e => { if (!e.access) denied(e.error || 'Could not reach the server.'); throw e; });
-  if (saved) fresh.then(b => { S.boot = b; drawWho(); }).catch(e => { if (!e.access) setNet(false, 'Showing the data saved on this device – the server did not answer (' + (e.error || '') + ').'); });
+  UI.setThemeTimes(((S.boot || {}).settings || {}).theme);
+  if (saved) fresh.then(b => { S.boot = b; drawWho(); UI.setThemeTimes((b.settings || {}).theme); }).catch(e => { if (!e.access) setNet(false, 'Showing the data saved on this device – the server did not answer (' + (e.error || '') + ').'); });
   $('boot').classList.add('hidden'); $('rail').classList.remove('hidden'); drawWho();
   const h = location.hash.replace(/^#/, '').split('/'); S.view = VIEWS[h[0]] ? h[0] : landing(); S.arg = h[1] ? decodeURIComponent(h[1]) : null;
   $('btnReload').onclick = async () => { S.L = null; try { S.boot = await call('boot'); ST.set('kv', BOOTKEY, S.boot).catch(() => { }); } catch (e) { toast(e.error || 'Not reachable', true); } render(); };

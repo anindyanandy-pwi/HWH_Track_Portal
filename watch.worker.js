@@ -63,7 +63,7 @@ self.onmessage = async (e) => {
     const stnPlace = {}; [...new Set(ballast.filter(x => !x.lid && x.stn).map(x => x.stn))].forEach(st => { try { const w = L.locate({ bsText: st + ' STN LIMIT', lineText: '' }); if (w && w.lid && w.km != null) stnPlace[st] = { lid: w.lid, km: w.km, m: w.m }; } catch (x) { } });
     // [B3a] TRC runs: one run id covers several section-lines (cross-section runs, runs entered in parts) – never merge them by run id
     const trcSeen = new Set(); const trc = []; fl.filter(f => f.kind === 'trcRuns' && f.group === '_all').forEach(f => (f.data || []).forEach(r => { const k = [r.id, r.lid, r.km, r.m, r.km2, r.m2, r.d].join('|'); if (!trcSeen.has(k)) { trcSeen.add(k); trc.push(r); } }));
-    const loaded = b.loaded || {}; const tmsAt = Object.values(loaded).flat().map(x => String(x.pressAt || x.at || '').slice(0, 10)).filter(Boolean).sort().pop() || '';
+    const loaded = b.loaded || {}; const tmsAt = Object.values(loaded).flat().map(x => String(x.pressAt || x.at || '')).filter(Boolean).sort().pop() || '';   // UTC kept; shown in IST
     const fmcAt = Object.values((b.fmc && b.fmc.lastRead) || {}).map(x => x.at || '').sort().pop() || '';
     const has = { health: health.length, spotCards: cards.length, trcRuns: K.trcRuns, workSite: K.workSite, fmc: fmc.length, condition: K.condition, itms: K.itms, ballastCushion: ballast.length, tampingDue: tamping.length };
     say(`   computing: ${health.reduce((a, g) => a + (g.lines || []).length, 0)} chart lines, ${cards.length} spot cards, ${trc.length} TRC run parts, ${ballast.length} ballast stretches, ${fmc.length} sheet records…`);

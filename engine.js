@@ -129,6 +129,22 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     if (!/[A-Za-z0-9\u0900-\u097F]/.test(s) && /^[\s\p{P}\p{S}]*$/u.test(s)) return true;
     var k = phKey(s); return !!(PHSET[k] || PHSET[k.replace(/[^a-z0-9]/g, '')]);
   };
+
+  // [B3b] every date-time is SHOWN in IST (Asia/Kolkata) with an "IST" label; files keep UTC. PE.ist('2026-11-02T05:28:58Z') -> "02-11-2026 10:58 IST"
+  var p2i = function (n) { return (n < 10 ? '0' : '') + n; };
+  PE.istParts = function (iso) {
+    var s = String(iso || ''); if (!s) return null; var t;
+    if (/^\d{14}$/.test(s)) t = Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8), +s.slice(8, 10), +s.slice(10, 12), +s.slice(12, 14));   // press id yyyymmddhhmmss (UTC)
+    else if (/^\d{4}-\d\d-\d\d$/.test(s)) return null;   // a plain date has no time – not converted
+    else t = Date.parse(s);
+    if (isNaN(t)) return null; var d = new Date(t + 330 * 60000);
+    return { d: p2i(d.getUTCDate()) + '-' + p2i(d.getUTCMonth() + 1) + '-' + d.getUTCFullYear(), t: p2i(d.getUTCHours()) + ':' + p2i(d.getUTCMinutes()), iso: d.toISOString().slice(0, 10) };
+  };
+  PE.ist = function (iso, dateOnly) { var x = PE.istParts(iso); if (!x) { var s = String(iso || ''); return /^\d{4}-\d\d-\d\d$/.test(s) ? s.slice(8, 10) + '-' + s.slice(5, 7) + '-' + s.slice(0, 4) : (s || '—'); } return dateOnly ? x.d : x.d + ' ' + x.t + ' IST'; };
+  /** the IST calendar date (yyyy-mm-dd) of a UTC time */
+  PE.istDate = function (iso) { var x = PE.istParts(iso); return x ? x.iso : String(iso || '').slice(0, 10); };
+  /** a TMS data press shown by the collector's pressLabel / atIst, else its time in IST – never the raw press id */
+  PE.pressLabel = function (p) { if (!p) return '—'; if (typeof p === 'string') return PE.ist(p); return p.pressLabel || (p.atIst ? (/IST/.test(p.atIst) ? p.atIst : p.atIst + ' IST') : PE.ist(p.at || p.pressAt || p.pressId)); };
   PE.blank = function (v) { return !String(v == null ? '' : v).trim(); };
 })(PE);
 

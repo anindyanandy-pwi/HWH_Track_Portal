@@ -20,9 +20,9 @@ async function watchGet(note) {
 /** what the stored watch was computed from – when this differs, the admin's browser computes it again */
 function inputsSig(b) {
   b = b || H.S.boot || {}; const K = b.kinds || {}; const o = {};
-  ['health', 'spotCards', 'trcRuns', 'workSite', 'assetChange', 'machineProg', 'condition', 'itms', 'fmc', 'feed'].forEach(k => { if (K[k]) o[k] = (K[k].presses || []).slice(-1)[0] + ':' + K[k].files; });
+  ['health', 'spotCards', 'trcRuns', 'workSite', 'assetChange', 'machineProg', 'condition', 'itms', 'fmc', 'feed', 'ballastCushion'].forEach(k => { if (K[k]) o[k] = (K[k].presses || []).slice(-1)[0] + ':' + K[k].files; });
   const last = (b.fmc && b.fmc.lastRead) || {}; o.fmcAt = Object.values(last).map(x => x.at || '').sort().pop() || '';
-  o.feedAt = (b.feed && b.feed.generatedAt) || ''; o.settings = JSON.stringify((b.settings || {}).watch || {}) + JSON.stringify(((b.settings || {}).rules || {}).tgi || {});
+  o.feedAt = (b.feed && b.feed.generatedAt) || ''; o.settings = JSON.stringify((b.settings || {}).watch || {}) + JSON.stringify(((b.settings || {}).rules || {}).tgi || {}) + ((b.settings || {}).rules || {}).cleanCushionMm;
   return JSON.stringify(o);
 }
 function watchStale() { const b = H.S.boot || {}; return !b.watch || b.watch.sig !== inputsSig(b); }
@@ -37,7 +37,7 @@ async function watchUpdate(say) {
     if (!K.health && !K.spotCards) { say('Blind-spot watch: nothing to compute yet – load TMS data first.'); return null; }
     say('Blind-spot watch: getting the stored files (cards, chart data, runs, work, sheet, feed)…');
     const L = await locator(); const N = names(); const S = H.settings();
-    const fl = await files([{ kind: 'health', group: '*' }, { kind: 'spotCards', group: '*' }, { kind: 'trcRuns', group: '_all' }, { kind: 'workSite', group: '_all' }, { kind: 'assetChange', group: '_all' }, { kind: 'machineProg', group: '_all' }, { kind: 'itms', group: '_all' }, { kind: 'condition', group: '*' }, { kind: 'fmc', group: '*' }, { kind: 'feed', group: '_all' }, { kind: 'watch', group: '_all' }], t => say('   ' + t));
+    const fl = await files([{ kind: 'health', group: '*' }, { kind: 'spotCards', group: '*' }, { kind: 'trcRuns', group: '_all' }, { kind: 'workSite', group: '_all' }, { kind: 'assetChange', group: '_all' }, { kind: 'machineProg', group: '_all' }, { kind: 'itms', group: '_all' }, { kind: 'condition', group: '*' }, { kind: 'fmc', group: '*' }, { kind: 'feed', group: '_all' }, { kind: 'watch', group: '_all' }, { kind: 'ballastCushion', group: '*' }], t => say('   ' + t));
     const groups = k => [...new Set(fl.filter(f => f.kind === k && f.group !== '_all').map(f => f.group))];
     const health = groups('health').map(g => snap(fl, 'health', g)).filter(Boolean);
     const cards = merge(fl.filter(f => f.group !== '_all'), 'spotCards');
@@ -45,12 +45,14 @@ async function watchUpdate(say) {
     const feed = snap(fl, 'feed', '_all') || { work: [], jobs: [], units: [] };
     const fmc = PE.fmcLocate(merge(fl, 'fmc'), L);
     const pc = PE.placeCounts(fmc);
+    const ballast = groups('ballastCushion').map(g => snap(fl, 'ballastCushion', g) || []).flat();
+    const stnPlace = {}; [...new Set(ballast.filter(x => !x.lid && x.stn).map(x => x.stn))].forEach(st => { try { const w = L.locate({ bsText: st + ' STN LIMIT', lineText: '' }); if (w && w.lid && w.km != null) stnPlace[st] = { lid: w.lid, km: w.km, m: w.m }; } catch (e) { } });
     const loaded = b.loaded || {}; const tmsAt = Object.values(loaded).flat().map(x => String(x.pressAt || x.at || '').slice(0, 10)).filter(Boolean).sort().pop() || '';
     const fmcAt = Object.values((b.fmc && b.fmc.lastRead) || {}).map(x => x.at || '').sort().pop() || '';
-    const has = { health: health.length, spotCards: cards.length, trcRuns: K.trcRuns, workSite: K.workSite, fmc: fmc.length, condition: K.condition, itms: K.itms };
+    const has = { health: health.length, spotCards: cards.length, trcRuns: K.trcRuns, workSite: K.workSite, fmc: fmc.length, condition: K.condition, itms: K.itms, ballastCushion: ballast.length };
     say(`   computing: ${health.reduce((a, g) => a + (g.lines || []).length, 0)} chart lines, ${cards.length} spot cards, ${fmc.length} sheet records…`);
     const today = String(b.today || new Date().toISOString()).slice(0, 10);
-    const W = PE.computeWatch({ S, N, today, now: new Date().toISOString(), health, units: feed.units || [], trc: merge(fl, 'trcRuns', '_all'), cards, ws: merge(fl, 'workSite', '_all'), acRecent: merge(fl, 'assetChange', '_all'), mpRecent: merge(fl, 'machineProg', '_all'), fmc, feedWork: feed.work || [], jobs: feed.jobs || [], cond, itms: merge(fl, 'itms', '_all'), fmcCoverage: (b.fmc && b.fmc.coverage) || {}, has, notPlaced: { total: pc.total, exact: pc.exact, approx: pc.approx, none: pc.none }, dataAt: { tms: tmsAt, fmc: fmcAt, feed: feed.generatedAt || '' }, prev: snap(fl, 'watch', '_all') });
+    const W = PE.computeWatch({ S, N, today, now: new Date().toISOString(), health, units: feed.units || [], trc: merge(fl, 'trcRuns', '_all'), cards, ws: merge(fl, 'workSite', '_all'), acRecent: merge(fl, 'assetChange', '_all'), mpRecent: merge(fl, 'machineProg', '_all'), fmc, feedWork: feed.work || [], jobs: feed.jobs || [], cond, itms: merge(fl, 'itms', '_all'), ballast, stnPlace, fmcCoverage: (b.fmc && b.fmc.coverage) || {}, has, notPlaced: { total: pc.total, exact: pc.exact, approx: pc.approx, none: pc.none }, dataAt: { tms: tmsAt, fmc: fmcAt, feed: feed.generatedAt || '' }, prev: snap(fl, 'watch', '_all') });
     const sig = inputsSig(b); W.sig = sig;
     const ready = W.rules.filter(r => r.status === 'ready').length;
     const summary = { sig, computedAt: W.computedAt, ready, waiting: W.rules.filter(r => r.status === 'waiting').map(r => r.id + ':' + r.missing.join('+')), cells: W.cells, units: Object.keys(W.units).length };
@@ -151,7 +153,7 @@ VIEWS.ov = async (el) => {
   const blindKm = Math.round((covU.blind + covU.partly) * 0.2);
   const tile = r => {
     const n = PE.ruleCount(r, sc.kind === 'division' ? null : U);
-    return `<div class="fx-tile ${r.status !== 'ready' ? 'wait' : n ? 'hot' : 'calm'}"><div class="fx-th"><span class="fx-code">${esc(r.id)}</span><span class="fx-tt">${two(r.en, r.hi)}</span></div>
+    return `<div class="fx-tile ${r.status !== 'ready' ? 'wait' : n ? 'hot' : 'calm'}" ${r.status === 'ready' ? `data-rule="${esc(r.id)}" role="button" tabindex="0"` : ''}><div class="fx-th"><span class="fx-code">${esc(r.id)}</span><span class="fx-tt">${two(r.en, r.hi)}</span></div>
       ${r.status === 'ready' ? `<div class="fx-big">${n}<small> ${esc(r.unitText || 'records')}</small></div>${r.km != null && sc.kind === 'division' ? `<div class="fx-muted">≈ ${r.km} km</div>` : ''}${spark(r.monthly, n ? 'hot' : '')}` : `<div class="fx-waitt">${HI() ? 'डेटा की प्रतीक्षा' : 'waiting for data'}: ${esc(r.missing.map(kindTxt).join(', '))}</div>`}
       <div class="fx-rule">${esc(r.rule)}${r.note ? ` <i>(${esc(r.note)})</i>` : ''}</div></div>`;
   };
@@ -194,7 +196,7 @@ VIEWS.ov = async (el) => {
     <div class="fx-legend"><span><i class="w-ok"></i>${HI() ? 'समय पर' : 'in time'}</span><span><i class="w-soon"></i>${HI() ? 'जल्द देय' : 'due soon'}</span><span><i class="w-over"></i>${HI() ? 'अतिदेय' : 'overdue'}</span><span><i class="w-none"></i>${HI() ? 'कोई नहीं / डेटा नहीं' : 'nobody / no data'}</span></div></section>
 
   <section class="fx-sec"><div class="fx-eyebrow">${two('Needs action', 'कार्यवाही आवश्यक')}</div>
-    <div class="fx-tiles act">${Aa.map(r => { const n = PE.ruleCount(r, sc.kind === 'division' ? null : U); return `<div class="fx-atile ${r.status !== 'ready' ? 'wait' : n ? 'hot' : 'calm'}"><div class="fx-tt">${two(r.en + (r.id === 'A1' ? ' · clean cushion < ' + ((H.settings().rules || {}).cleanCushionMm || 150) + ' mm' : ''), r.hi)}</div>${r.status === 'ready' ? `<div class="fx-big">${n}</div>${spark(r.monthly, 'light')}` : `<div class="fx-waitt">${HI() ? 'डेटा की प्रतीक्षा' : 'waiting for data'}: ${esc(r.missing.map(kindTxt).join(', '))}</div>`}</div>`; }).join('')}</div></section>
+    <div class="fx-tiles act">${Aa.map(r => { const n = PE.ruleCount(r, sc.kind === 'division' ? null : U); return `<div class="fx-atile ${r.status !== 'ready' ? 'wait' : n ? 'hot' : 'calm'}" ${r.status === 'ready' ? `data-rule="${esc(r.id)}" role="button" tabindex="0"` : ''}><div class="fx-tt">${two(r.en + (r.id === 'A1' ? ' · clean cushion < ' + ((H.settings().rules || {}).cleanCushionMm || 150) + ' mm' : ''), r.hi)}</div>${r.status === 'ready' ? `<div class="fx-big">${n}${r.km != null && sc.kind === 'division' && r.id === 'A1' ? `<small style="color:inherit"> · ${r.km} km</small>` : ''}</div>${r.note ? `<div class="fx-anote">${esc(r.note)}</div>` : ''}${spark(r.monthly, 'light')}` : `<div class="fx-waitt">${HI() ? 'डेटा की प्रतीक्षा' : 'waiting for data'}: ${esc(r.missing.map(kindTxt).join(', '))}</div>`}</div>`; }).join('')}</div></section>
 
   <section class="fx-sec fx-two"><div><div class="fx-eyebrow">${two('Today', 'आज')}</div>
     <ol class="fx-today">${today.length ? today.map(t => `<li><span class="fx-chip">${esc(t.tag)}</span><b>${esc(t.title)}</b><div class="fx-muted">${esc(t.why)}</div><button class="fx-link" ${goBtn(t.go)}>${esc(t.btn)} →</button></li>`).join('') : `<li>${HI() ? 'आज कुछ ज़रूरी नहीं' : 'Nothing urgent in this scope'}</li>`}</ol></div>
@@ -207,6 +209,14 @@ VIEWS.ov = async (el) => {
     <div class="fx-legend"><span><i class="h1"></i>${HI() ? 'सब ठीक' : 'all fine'}</span><span><i class="h2"></i>&lt; 20 %</span><span><i class="h3"></i>&lt; 50 %</span><span><i class="h4"></i>≥ 50 %</span></div></section>
   ${bottomNav('ov')}<div class="fx-credit">${UI.credit({ br: true })}</div></div>`;
   wire(el);
+  // [PB] B1a: a tile opens its list – every stretch / record with its place, text (e.g. screening month and source) and a link to the place
+  el.querySelectorAll('[data-rule]').forEach(t => t.onclick = () => {
+    const r = rules.find(x => x.id === t.dataset.rule); if (!r) return; const L = (r.records || []).filter(inU);
+    H.modal(`<h3 style="margin:0 0 4px">${esc(r.id)} · ${esc(r.en)} <span class="small muted">${esc(r.hi)}</span></h3><div class="small muted">${esc(r.rule)}${r.note ? ' – ' + esc(r.note) : ''}</div>
+      <div class="small" style="margin:6px 0">${L.length} listed${r.more ? ` (stored list holds the first ${(r.records || []).length} of ${(r.records || []).length + r.more})` : ''} · ${esc(scopeName(sc))}</div>
+      <div style="max-height:60vh;overflow:auto"><table class="t compact"><tbody>${L.map(x => `<tr><td class="small nw">${x.lid ? esc(x.lid) + '<br>' + PE.fmtKm(x.km, x.m) + (x.km2 != null ? '–' + PE.fmtKm(x.km2, x.m2) : '') : esc(x.where || x.stn || '')}${x.unit ? '<br><span class="muted">' + esc(x.unit) + '</span>' : ''}</td><td class="small">${esc(x.text || x.title || '')}${x.seen ? '<div class="muted">' + esc(x.seen) + '</div>' : ''}</td><td>${x.lid && x.km != null ? `<button class="btn ghost sm" data-pl="${esc(placeArg(x))}">Open</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`);
+    document.querySelectorAll('#modalBody [data-pl]').forEach(b => b.onclick = () => { H.closeModal(); document.body.classList.remove('front'); go('loc', b.dataset.pl); });
+  });
   el.querySelector('[data-sk="division"]').onclick = () => { SC.kind = 'division'; SC.value = ''; H.render(); };
   el.querySelectorAll('select[data-sk]').forEach(s => s.onchange = () => { if (!s.value) return; SC.kind = s.dataset.sk; SC.value = s.value; H.render(); });
   $('fxGo').onclick = () => { const km = parseFloat($('fxKm').value); if (isNaN(km)) { toast(HI() ? 'किमी लिखें' : 'Type the km', true); return; } document.body.classList.remove('front'); go('loc', `${$('fxLid').value}|${Math.floor(km)}|${Math.round((km % 1) * 1000)}`); };

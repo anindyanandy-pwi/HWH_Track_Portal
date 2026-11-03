@@ -648,3 +648,5 @@ body.front main{padding:0;max-width:none}
   .fx-three{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.fx-big4{grid-template-columns:repeat(4,minmax(0,1fr))}
   .fx-nav{justify-content:center}.fx-nav button{flex:0 0 120px}
 }
+
+.fx [data-rule]{cursor:pointer}.fx-anote{font-size:11.5px;opacity:.85;line-height:1.3}

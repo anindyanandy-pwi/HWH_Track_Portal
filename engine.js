@@ -249,8 +249,8 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
 var PE = (typeof PE !== 'undefined' && PE) || {};
 (function (PE) {
   'use strict';
-  PE.KINDS = ['blockSections', 'workSite', 'spotCards', 'assetChange', 'machineProg', 'trcRuns', 'tqiSix', 'condition', 'itms'];
-  PE.KIND_LABEL = { blockSections: 'Block sections', workSite: 'Work sites', spotCards: 'Spot attention cards', assetChange: 'Asset changes', machineProg: 'Machine progress', trcRuns: 'TRC run list', tqiSix: 'TQI six runs', condition: 'Condition layers', itms: 'ITMS runs', health: 'Track health (chart + GMT)' };
+  PE.KINDS = ['blockSections', 'workSite', 'spotCards', 'assetChange', 'machineProg', 'trcRuns', 'tqiSix', 'condition', 'itms', 'ballastCushion'];
+  PE.KIND_LABEL = { blockSections: 'Block sections', workSite: 'Work sites', spotCards: 'Spot attention cards', assetChange: 'Asset changes', machineProg: 'Machine progress', trcRuns: 'TRC run list', tqiSix: 'TQI six runs', condition: 'Condition layers', itms: 'ITMS runs', ballastCushion: 'Ballast cushion (asset register)', health: 'Track health (chart + GMT)' };
 
   /** several part files of one press -> one object with the record arrays joined */
   PE.combineParts = function (files) {
@@ -371,6 +371,20 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     else if (kind === 'condition') {
       (R.missingLinear || []).forEach(function (c) { var lid = lidOf(c.section, c.line); var r = { id: 'ml' + count, k: 'missing', f: c.feature, lid: lid, km: c.fromKm, m: c.fromM, km2: c.toKm, m2: c.toM }; count++; put(by, lid, r); if (!lid) miss(r, 'section/line not known'); });
       (R.corrosionProne || []).forEach(function (c) { var lid = lidOf(c.section, c.line); var r = { id: 'cp' + (c.id || count), k: 'corrosion', f: c.remark || c.kind, lid: lid, km: c.fromKm, m: c.fromM, km2: c.toKm, m2: c.toM }; count++; put(by, lid, r); if (!lid) miss(r, 'section/line not known'); });
+    }
+    else if (kind === 'ballastCushion') {
+      // [PB] B1a: TMS asset register – clean / total cushion per stretch, deep screening month. Running-line stretches by section-line;
+      // station yard stretches (no section, yard line names, yard-local km) kept apart in group _yard with the station.
+      (R.stretches || []).forEach(function (x, i) {
+        var lid = x.section ? lidOf(x.section, x.line) : null;
+        var r = { id: 'bc' + (x.secCode || '') + '|' + (x.section || x.station) + '|' + x.line + '|' + x.xover + '|' + x.kmFrom + '/' + x.mFrom, lid: lid, km: x.kmFrom, m: x.mFrom, km2: x.kmTo, m2: x.mTo, len: x.lengthKm,
+          cc: x.cleanCushion == null ? null : +x.cleanCushion, tc: x.totalCushion == null ? null : +x.totalCushion, scr: x.screened || '', how: x.method || '', bt: x.ballastType || '' };
+        if (x.xover) r.xo = x.xover;
+        count++;
+        if (!x.section) { r.stn = s(x.station).toUpperCase(); r.yl = x.line || ''; (by._yard = by._yard || []).push(r); return; }
+        put(by, lid, r); if (!lid) miss(r, 'section/line not known');
+      });
+      extra = F.counts || {};
     }
     else if (kind === 'itms') {
       // ITMS press file: records.runs [{section, line, runId, run, date, kmFrom, kmTo, folder, files:[{name, rep, size}]}]; the PDFs stay on the PC
@@ -1067,11 +1081,16 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       return { cells: bad, records: stretches(bad).map(function (s) { var c = X.C.byKey[s.lid + '|' + s.km + '|' + (s.m / 200)]; s.text = 'TMS TGI ' + (c && c.tgi ? c.tgi[0][0] + ' (run ' + (c.tgi[0][1] || '?') + ')' : '?') + ' – no card, no work, no plan in ' + W.b6Months + ' months'; return s; }), snapshot: true, dataOf: ['tms'] };
     } });
   // B7 – data missing
-  R({ id: 'B7', group: 'B', en: 'Data missing', hi: 'डेटा उपलब्ध नहीं', rule: 'Linear data missing in TMS, or records that could not be placed to km (cushion not measured: when the ballast-cushion kind is loaded)', needs: ['condition'], later: ['ballastCushion'], thresholds: [], unitText: 'stretches',
+  R({ id: 'B7', group: 'B', en: 'Data missing', hi: 'डेटा उपलब्ध नहीं', rule: 'Linear data missing in TMS, or clean ballast cushion 0 / blank in the TMS ballast register (records not placed to km: listed in the admin sheet read)', needs: ['condition'], later: ['ballastCushion'], thresholds: [], unitText: 'stretches',
     run: function (X) {
-      var miss = {}; X.cond.filter(function (c) { return c.k === 'missing'; }).forEach(function (c) { PE.cellsOf(X.C, c.lid, c.km, c.m, c.km2, c.m2).forEach(function (x) { miss[x.key] = x; }); });
+      var miss = {}, why = {}; X.cond.filter(function (c) { return c.k === 'missing'; }).forEach(function (c) { PE.cellsOf(X.C, c.lid, c.km, c.m, c.km2, c.m2).forEach(function (x) { miss[x.key] = x; why[x.key] = 'TMS: linear data missing'; }); });
+      // [PB] B1a: clean cushion 0 or blank = data missing, never "deep screening needed"
+      var bm = X.ballast.filter(function (b) { return !(b.cc > 0); }); var yard = [];
+      bm.forEach(function (b) { if (!b.lid) { yard.push(b); return; } PE.cellsOf(X.C, b.lid, b.km, b.m, b.km2, b.m2).forEach(function (x) { if (!miss[x.key]) why[x.key] = 'TMS ballast register: clean cushion ' + (b.cc === 0 ? '0' : 'blank') + (b.scr ? ' (screened ' + b.scr + ')' : ''); miss[x.key] = x; }); });
       var cells = Object.keys(miss).map(function (k) { return miss[k]; });
-      return { cells: cells, records: stretches(cells).map(function (s) { s.text = 'TMS: linear data missing'; return s; }), extra: { notPlaced: X.notPlaced }, snapshot: true, dataOf: ['tms', 'fmc'] };
+      var recs = stretches(cells).map(function (s) { s.text = why[s.lid + '|' + s.km + '|' + (s.m / 200)] || 'data missing'; return s; })
+        .concat(yard.map(function (b) { return { stn: b.stn, yl: b.yl, unit: b.unit || '', len: b.len, text: b.stn + ' yard, ' + (b.yl || 'line ?') + ' ' + PE.fmtKm(b.km, b.m) + '–' + PE.fmtKm(b.km2, b.m2) + ': clean cushion ' + (b.cc === 0 ? '0' : 'blank') + ' in the TMS ballast register' }; }));
+      return { cells: cells, records: recs, extra: { notPlaced: X.notPlaced, cushionMissing: bm.length, cushionMissingYard: yard.length }, note: X.has.ballastCushion ? bm.length + ' ballast register stretches with clean cushion 0 / blank (' + yard.length + ' in station yards)' : '', snapshot: true, dataOf: ['tms', 'fmc'] };
     } });
   // H1 – repeat, never fixed
   R({ id: 'H1', group: 'H', en: 'Repeat, never fixed', hi: 'बार-बार, कभी ठीक नहीं', rule: 'Same 200 m gets cards again and again in 12 months, each one closed', needs: ['spotCards'], thresholds: ['repeatCards', 'repeatMonths'], src: ['Spot cards', 'TMS work', 'Machine days', 'Field sheet'],
@@ -1143,7 +1162,17 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   // H6 – season pattern
   R({ id: 'H6', group: 'H', en: 'Season pattern', hi: 'मौसमी स्वरूप', rule: 'Bad every monsoon, recovers in winter – from TQI history since 2019 and water logging', needs: ['tqiHistory'], later: ['waterLogging'], thresholds: [], src: ['TQI history', 'Water logging'] });
   // needs-action tiles (A)
-  R({ id: 'A1', group: 'A', en: 'Deep screening needed', hi: 'डीप स्क्रीनिंग आवश्यक', rule: 'Clean ballast cushion below settings.rules.cleanCushionMm (TMS ballast report)', needs: ['ballastCushion'], thresholds: [] });
+  R({ id: 'A1', group: 'A', en: 'Deep screening needed', hi: 'डीप स्क्रीनिंग आवश्यक', rule: 'Clean ballast cushion above 0 and below rules.cleanCushionMm in the TMS ballast register (0 / blank = data missing, B7)', needs: ['ballastCushion'], thresholds: [], unitText: 'stretches',
+    run: function (X) {
+      var lim = (X.S.rules && X.S.rules.cleanCushionMm) || 150;
+      var L = X.ballast.filter(function (b) { return b.cc > 0 && b.cc < lim; }).sort(function (a, b) { return a.cc - b.cc; });
+      var km = Math.round(L.reduce(function (a, b) { return a + (+b.len || 0); }, 0) * 10) / 10;
+      return { records: L.map(function (b) {
+          var where = b.lid ? null : b.stn + ' yard, ' + (b.yl || 'line ?') + (b.xo ? ' x-over ' + b.xo : '');
+          return { lid: b.lid, km: b.lid ? b.km : null, m: b.m, km2: b.lid ? b.km2 : null, m2: b.m2, where: where, unit: b.unit || '', cc: b.cc, scr: b.scr, len: b.len,
+            text: (where ? where + ' ' + PE.fmtKm(b.km, b.m) + '–' + PE.fmtKm(b.km2, b.m2) + ': ' : '') + 'clean cushion ' + b.cc + ' mm' + (b.tc != null ? ' (total ' + b.tc + ')' : '') + ' · deep screened ' + (b.scr || 'month not given') + (b.how ? ' (' + b.how + ')' : '') + ' · source: TMS ballast register' };
+        }), count: L.length, kmTotal: km, unitOf: function (r) { return r.unit; }, note: (X.W.ballastNote || '') + (X.W.ballastNote ? ' · ' : '') + km + ' km below ' + lim + ' mm', snapshot: true, dataOf: ['tms'] };
+    } });
   R({ id: 'A2', group: 'A', en: 'Tamping due', hi: 'टैम्पिंग देय', rule: 'TMS tamping due (PML / CBML) list', needs: ['tampingDue'], thresholds: [] });
   R({ id: 'A3', group: 'A', en: 'Open P1 / P2 spot cards', hi: 'खुले P1 / P2 कार्ड', rule: 'Spot cards of priority 1 or 2 still open in TMS', needs: ['spotCards'], thresholds: [],
     run: function (X) {
@@ -1177,7 +1206,9 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     C.list.forEach(function (c) { if (c.unit) return; var o = vote[c.lid + '|' + c.km]; if (!o) { for (var d = 1; d <= 3 && !o; d++) o = vote[c.lid + '|' + (c.km - d)] || vote[c.lid + '|' + (c.km + d)]; } if (!o) return; c.unit = Object.keys(o).sort(function (a, b) { return o[b] - o[a]; })[0]; c.aen = aenOf[c.unit] || ''; c.unitBy = 'tms'; });
     var pk = PE.buildPackages(D.fmc || [], D.ws || [], { ac: D.acRecent || [], mp: D.mpRecent || [], fw: D.feedWork || [], sc: [] }, { S: S, N: D.N, coverage: D.fmcCoverage || {} });
     var fmcCovered = {}; Object.keys(D.fmcCoverage || {}).forEach(function (d) { fmcCovered[monthOf(d)] = 1; });
-    var X = { S: S, W: W, today: today, C: C, has: has, trc: D.trc || [], cards: cards, detailShare: cards.length ? withDet / cards.length : 0, work: work, pk: pk, jobs: D.jobs || [], cond: D.cond || [], fmcCovered: fmcCovered, notPlaced: D.notPlaced || {}, results: {} };
+    var X = { S: S, W: W, today: today, C: C, has: has, trc: D.trc || [], cards: cards, detailShare: cards.length ? withDet / cards.length : 0, work: work, pk: pk, jobs: D.jobs || [], cond: D.cond || [], ballast: [], fmcCovered: fmcCovered, notPlaced: D.notPlaced || {}, results: {} };
+    // [PB] B1a: ballast register stretches with their unit (running line: the unit of the first 200 m; station yard: the station's unit given by the page)
+    X.ballast = (D.ballast || []).map(function (b) { var o = Object.assign({}, b); if (b.lid) { var cs = PE.cellsOf(C, b.lid, b.km, b.m, b.km2, b.m2); o.unit = cs[0] ? cs[0].unit : ''; } else { var p = (D.stnPlace || {})[b.stn]; var c2 = p ? PE.cellsOf(C, p.lid, p.km, p.m) : []; o.unit = c2[0] ? c2[0].unit : ''; } return o; });
     var out = { v: 1, computedAt: D.now || new Date().toISOString(), today: today, dataAt: D.dataAt || {}, freshDays: W.freshDays || {}, cells: C.list.length, rules: [], units: {}, lines: [] };
     PE.WATCH_RULES.forEach(function (r) {
       var miss = (r.needs || []).filter(function (k) { return !has[k]; });
@@ -1187,7 +1218,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
           var res = r.run(X); X.results[r.id] = res;
           var recs = res.records || [];
           e.count = res.cells ? res.cells.length : (res.count != null ? res.count : recs.length);
-          e.km = res.cells ? Math.round(res.cells.length * 0.2 * 10) / 10 : null;
+          e.km = res.cells ? Math.round(res.cells.length * 0.2 * 10) / 10 : (res.kmTotal != null ? res.kmTotal : null);
           e.byUnit = {}; (res.cells || recs).forEach(function (x) { var u = x.unit || '?'; e.byUnit[u] = (e.byUnit[u] || 0) + (res.cells ? 1 : (x.n && r.id === 'H4' ? x.n : 1)); });
           if (r.id === 'H4') e.count = res.count;
           e.records = recs.slice(0, W.maxRecords || 400); e.more = Math.max(0, recs.length - e.records.length);

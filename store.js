@@ -22,6 +22,7 @@ const S = {
   set: (store, k, v) => tx(store, 'readwrite', s => req(s.put(v, k))),
   del: (store, k) => tx(store, 'readwrite', s => req(s.delete(k))),
   all: (store) => tx(store, 'readonly', s => new Promise((res, rej) => { const out = []; const c = s.openCursor(); c.onsuccess = () => { const cur = c.result; if (cur) { out.push({ key: cur.key, value: cur.value }); cur.continue(); } else res(out); }; c.onerror = () => rej(c.error); })),
+  keys: (store) => tx(store, 'readonly', s => req(s.getAllKeys())),
   clear: (store) => tx(store, 'readwrite', s => req(s.clear())),
 };
 // ask the browser to keep this data even when storage runs low

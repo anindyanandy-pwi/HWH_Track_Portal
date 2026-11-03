@@ -26,48 +26,31 @@ function inputsSig(b) {
   return JSON.stringify(o);
 }
 function watchStale() { const b = H.S.boot || {}; return !b.watch || b.watch.sig !== inputsSig(b); }
-let RUNNING = null;
-/** admin only: compute the watch from every stored history file and save it as kind "watch" (one file, group _all) */
+let RUNNING = null, WORKER = null, CANCEL = null;
+/** admin only: compute the watch in a Web Worker (never on the page's main thread) and save it as kind "watch". Background, cancellable. */
 let AGAIN = false;
 async function watchUpdate(say) {
   if (RUNNING) { AGAIN = true; return RUNNING.then(() => { if (AGAIN) { AGAIN = false; return watchUpdate(say); } return WS.data; }); }   // new data came in meanwhile: once more
   say = say || (() => { });
-  RUNNING = (async () => {
+  RUNNING = new Promise((resolve, reject) => {
     const b = H.S.boot || {}; const K = b.kinds || {};
-    if (!K.health && !K.spotCards) { say('Blind-spot watch: nothing to compute yet – load TMS data first.'); return null; }
-    say('Blind-spot watch: getting the stored files (cards, chart data, runs, work, sheet, feed)…');
-    const L = await locator(); const N = names(); const S = H.settings();
-    const fl = await files([{ kind: 'health', group: '*' }, { kind: 'spotCards', group: '*' }, { kind: 'trcRuns', group: '_all' }, { kind: 'workSite', group: '_all' }, { kind: 'assetChange', group: '_all' }, { kind: 'machineProg', group: '_all' }, { kind: 'itms', group: '_all' }, { kind: 'condition', group: '*' }, { kind: 'fmc', group: '*' }, { kind: 'feed', group: '_all' }, { kind: 'watch', group: '_all' }, { kind: 'ballastCushion', group: '*' }, { kind: 'tampingDue', group: '*' }, { kind: 'fmcDays', group: '*' }, { kind: 'assetChange', group: '_none' }], t => say('   ' + t));
-    const groups = k => [...new Set(fl.filter(f => f.kind === k && f.group !== '_all').map(f => f.group))];
-    const health = groups('health').map(g => snap(fl, 'health', g)).filter(Boolean);
-    const cards = merge(fl.filter(f => f.group !== '_all'), 'spotCards');
-    const cond = groups('condition').map(g => snap(fl, 'condition', g) || []).flat();
-    const feed = snap(fl, 'feed', '_all') || { work: [], jobs: [], units: [] };
-    const fmc = PE.fmcLocate(merge(fl, 'fmc').map(r => PE.fmcClean(r, S)).filter(Boolean), L);   // [PB] B2: placeholder rows are not work
-    const tamping = groups('tampingDue').map(g => snap(fl, 'tampingDue', g) || []).flat();
-    const days = merge(fl.filter(f => f.kind === 'fmcDays'), 'fmcDays');
-    const pc = PE.placeCounts(fmc);
-    const ballast = groups('ballastCushion').map(g => snap(fl, 'ballastCushion', g) || []).flat();
-    const stnPlace = {}; [...new Set(ballast.filter(x => !x.lid && x.stn).map(x => x.stn))].forEach(st => { try { const w = L.locate({ bsText: st + ' STN LIMIT', lineText: '' }); if (w && w.lid && w.km != null) stnPlace[st] = { lid: w.lid, km: w.km, m: w.m }; } catch (e) { } });
-    const loaded = b.loaded || {}; const tmsAt = Object.values(loaded).flat().map(x => String(x.pressAt || x.at || '').slice(0, 10)).filter(Boolean).sort().pop() || '';
-    const fmcAt = Object.values((b.fmc && b.fmc.lastRead) || {}).map(x => x.at || '').sort().pop() || '';
-    const has = { health: health.length, spotCards: cards.length, trcRuns: K.trcRuns, workSite: K.workSite, fmc: fmc.length, condition: K.condition, itms: K.itms, ballastCushion: ballast.length, tampingDue: tamping.length };
-    say(`   computing: ${health.reduce((a, g) => a + (g.lines || []).length, 0)} chart lines, ${cards.length} spot cards, ${fmc.length} sheet records…`);
-    const today = String(b.today || new Date().toISOString()).slice(0, 10);
-    const W = PE.computeWatch({ S, N, today, now: new Date().toISOString(), health, units: feed.units || [], trc: merge(fl, 'trcRuns', '_all'), cards, ws: merge(fl, 'workSite', '_all'), acRecent: merge(fl, 'assetChange', '_all'), mpRecent: merge(fl, 'machineProg', '_all'), fmc, feedWork: feed.work || [], jobs: feed.jobs || [], cond, itms: merge(fl, 'itms', '_all'), ballast, stnPlace, tamping, days, pnx: merge(fl, 'assetChange', '_none').filter(a => a.k === 'pnx'), fmcCoverage: (b.fmc && b.fmc.coverage) || {}, has, notPlaced: { total: pc.total, exact: pc.exact, approx: pc.approx, none: pc.none }, dataAt: { tms: tmsAt, fmc: fmcAt, feed: feed.generatedAt || '' }, prev: snap(fl, 'watch', '_all') });
-    const sig = inputsSig(b); W.sig = sig;
-    const ready = W.rules.filter(r => r.status === 'ready').length;
-    const summary = { sig, computedAt: W.computedAt, ready, waiting: W.rules.filter(r => r.status === 'waiting').map(r => r.id + ':' + r.missing.join('+')), cells: W.cells, units: Object.keys(W.units).length };
-    const lt = W.lineTypes || {}; say('   line types: ' + Object.keys(lt).map(k => `${k} ${lt[k].main} main / ${lt[k].loop} loop / ${lt[k].siding} siding / ${lt[k].unknown} unknown`).join('; '));
-    say(`   ${ready} of ${W.rules.length} rules ready; saving the watch (${Math.round(JSON.stringify(W).length / 1024)} kB)…`);
-    const pid = 'w' + new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
-    await call('ingest', { kind: 'watch', pressId: pid, at: W.computedAt, files: [{ group: '_all', rows: W.rules.length, b64: await gzB64(JSON.stringify(W)) }], summary });
-    WS.data = W; if (H.S.boot) { H.S.boot.watch = summary; ST.set('kv', H.BOOTKEY, H.S.boot).catch(() => { }); }
-    say('Blind-spot watch saved – Overview and Three things show it now.');
-    return W;
-  })();
-  try { return await RUNNING; } finally { RUNNING = null; }
+    if (!K.health && !K.spotCards) { say('Blind-spot watch: nothing to compute yet – load TMS data first.'); resolve(null); return; }
+    let w; try { w = new Worker('watch.worker.js?v=' + (H.CFG.VERSION || '')); } catch (e) { reject({ error: 'This browser cannot run the watch in the background: ' + (e.message || e) }); return; }
+    WORKER = w;
+    CANCEL = () => { w.terminate(); WORKER = null; say('Blind-spot watch: cancelled – the last stored watch stays.'); reject({ error: 'cancelled', cancelled: true }); };
+    w.onmessage = ev => {
+      const m = ev.data || {};
+      if (m.t === 'say') say(m.text);
+      else if (m.t === 'done') { w.terminate(); WORKER = null; WS.data = m.W; if (H.S.boot) { H.S.boot.watch = m.summary; ST.set('kv', H.BOOTKEY, H.S.boot).catch(() => { }); } say('Blind-spot watch saved – Overview and Three things show it now.'); resolve(m.W); }
+      else if (m.t === 'error') { w.terminate(); WORKER = null; reject({ error: m.error }); }
+    };
+    w.onerror = e => { w.terminate(); WORKER = null; reject({ error: 'watch worker: ' + (e.message || 'failed') }); };
+    w.postMessage({ cmd: 'run', api: H.CFG.API, token: H.token(), settings: H.settings(), boot: b, sig: inputsSig(b) });
+  });
+  try { return await RUNNING; } finally { RUNNING = null; CANCEL = null; }
 }
+H.watchCancel = () => { if (CANCEL) CANCEL(); };
+H.watchRunning = () => !!RUNNING;
 H.watchUpdate = watchUpdate; H.watchStale = watchStale; H.watchClear = () => { WS.data = null; };
 
 // ---------------------------------------------------------------- scope
@@ -145,13 +128,27 @@ async function computeHere(el, on) {
   const say = t => { box.textContent += t + '\n'; };
   try { await watchUpdate(say); go(on); } catch (e) { say('ERROR: ' + (e.error || e.message || e)); }
 }
+/** the small progress / status line under the scope bar: running (with Cancel) or "newer data held" (admin: Update now) */
+function upd() {
+  const n = $('fxUpd'); if (!n) return; const A = (H.S.boot || {}).role === 'admin';
+  if (RUNNING) { n.innerHTML = `<span id="fxUpdT">${esc(H.lastSay || 'Updating the watch in the background…')}</span> <button class="fx-link" id="fxCancel">${HI() ? 'रद्द करें' : 'Cancel'}</button>`; $('fxCancel').onclick = () => H.watchCancel(); return; }
+  if (A && watchStale()) { n.innerHTML = `${HI() ? 'नया डेटा उपलब्ध – निगरानी पुरानी है' : 'Newer data is held than this watch.'} <button class="fx-link" id="fxUpdNow">${HI() ? 'अभी अद्यतन करें' : 'Update now (in the background)'}</button>`; $('fxUpdNow').onclick = () => bgUpdate(); return; }
+  n.innerHTML = '';
+}
+/** run the watch in the background from a front page; the page stays usable */
+function bgUpdate() {
+  const sayL = t => { H.lastSay = t.trim(); const x = $('fxUpdT'); if (x) x.textContent = H.lastSay; };
+  const p = watchUpdate(sayL); upd();
+  p.then(w => { H.lastSay = ''; if (w && (H.S.view === 'ov' || H.S.view === 'home')) H.render(); else upd(); }, e => { H.lastSay = ''; const n = $('fxUpd'); if (n) n.textContent = e.cancelled ? (HI() ? 'रद्द किया' : 'Cancelled – the last stored watch is shown.') : 'Could not update the watch: ' + (e.error || e.message || e); });
+}
 async function load(el, on) {
   document.body.classList.add('front');
   el.innerHTML = `<div class="fx">${head(on === 'ov' ? 'Overview' : 'Three things', on === 'ov' ? 'अवलोकन' : 'तीन काम')}<section class="fx-sec"><div class="fx-card"><h3>${HI() ? 'खुल रहा है…' : 'Opening…'}</h3><p id="fxNote" class="fx-muted">${HI() ? 'इस डिवाइस पर रखा डेटा' : 'Using the data kept on this device'}</p></div></section></div>`;
   const W = await watchGet(t => { const n = $('fxNote'); if (n) n.textContent = t; });
   const A = (H.S.boot || {}).role === 'admin';
   if (!W) { emptyPage(el, on, A ? { t: 'The blind-spot watch is not computed yet', p: 'It is computed on this PC from the stored files (about two server calls). It runs by itself after each Load TMS data, sheet read and feed read.', btn: '<button class="fx-btn" id="fxCompute">Compute the watch now</button>' } : { t: 'Not ready yet', p: WS.err || 'The division office has not computed the blind-spot watch yet. The Location card and the Work register work already.' }); return null; }
-  if (A && watchStale() && !RUNNING) setTimeout(() => watchUpdate(t => { const n = $('fxUpd'); if (n) n.textContent = t; }).then(w => { if (w && (H.S.view === 'ov' || H.S.view === 'home')) H.render(); }).catch(e => { const n = $('fxUpd'); if (n) n.textContent = 'Could not update the watch: ' + (e.error || e.message || e); }), 50);
+  // [B3a] opening a page never starts a computation: the last stored watch is shown at once; the admin gets a note when newer data is held
+  setTimeout(() => upd(), 0);
   return W;
 }
 

@@ -89,7 +89,9 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     return null;
   };
   PE.addDays = function (iso, n) { var d = new Date(String(iso).slice(0, 10) + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
-  PE.daysBetween = function (a, b) { var A = String(a || ''), B = String(b || ''); if (A.length === 7) A += '-01'; if (B.length === 7) B += '-01'; return Math.round((Date.parse(B.slice(0, 10) + 'T00:00:00Z') - Date.parse(A.slice(0, 10) + 'T00:00:00Z')) / 864e5); };
+  var DAYC = {}, DAYN = 0;   // [B3a] day numbers cached (the watch compares dates millions of times)
+  var dayNo = function (x) { x = String(x || ''); if (x.length === 7) x += '-01'; x = x.slice(0, 10); var v = DAYC[x]; if (v === undefined) { if (DAYN > 50000) { DAYC = {}; DAYN = 0; } v = DAYC[x] = Date.parse(x + 'T00:00:00Z') / 864e5; DAYN++; } return v; };
+  PE.daysBetween = function (a, b) { return Math.round(dayNo(b) - dayNo(a)); };
   PE.num = function (v) { var n = parseFloat(String(v == null ? '' : v).replace(/,/g, '')); return isFinite(n) ? n : null; };
   /** minutes since midnight from "23:30", "0:30", "03.00" */
   PE.hm = function (s) { var m = String(s || '').match(/(\d{1,2})\s*[:.]\s*(\d{2})/); return m ? (+m[1]) * 60 + (+m[2]) : null; };
@@ -466,7 +468,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     else if (kind === 'trcRuns') {
       (R.runs || []).forEach(function (t) {
         var lid = lidOf(t.section, t.line);
-        var r = { id: 'tr' + t.runId, d: t.date, lid: lid, km: t.fromKm, m: t.fromM, km2: t.toKm, m2: t.toM, sp: t.speed, car: t.car, let: t.letter };
+        var r = { id: 'tr' + t.runId + '|' + (t.secCode || t.section) + '|' + (t.lineCode || t.line) + '|' + t.fromKm + '/' + t.fromM, run: t.runId, d: t.date, lid: lid, km: t.fromKm, m: t.fromM, km2: t.toKm, m2: t.toM, sp: t.speed, car: t.car, let: t.letter };
         count++; all.push(r); put(by, lid, r); if (!lid) miss(r, 'section/line not known');
       });
     }
@@ -1144,7 +1146,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   // ---------------------------------------------------------------- the 200 m stretches (cells) of the division, with their unit
   /** cells from the health files: [{key, lid, km, ci, cg, rs, tgi:[[v, date]...]}]; units: feed units (level 2 = in-charge) */
   PE.watchCells = function (healthGroups, units) {
-    var cells = [], byKey = {}, byLid = {};
+    var cells = [], byKey = {}, byLid = {}, byKm = {};
     var segs = (units || []).filter(function (u) { return u.lid && u.a && u.b; }).sort(function (a, b) { return (a.level === 2 ? 0 : 1) - (b.level === 2 ? 0 : 1); });
     (healthGroups || []).forEach(function (g) {
       (g && g.lines || []).forEach(function (L) {
@@ -1152,20 +1154,29 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
         var fr = (L.f || []).map(function (x) { return { type: x[0], side: x[1], d: x[2], km: +x[3], m: +x[4] }; });
         (L.c || []).forEach(function (a) {
           var km = a[0], ci = a[1], pos = PE.P(km, ci * 200 + 100);
+          // [B3a] the chart's line extent is padded to the section's range: a 200 m cell with no rail, GMT, tamping or TGI data is not track of this line
+          if (!a[2] && a[5] == null && !a[7] && !tg[km]) return;
           var u = null; for (var i = 0; i < segs.length; i++) { var s = segs[i]; if (s.lid === L.lid && PE.P(s.a[0], s.a[1]) <= pos && pos < PE.P(s.b[0], s.b[1])) { u = s; break; } }
           var c = { key: L.lid + '|' + km + '|' + ci, lid: L.lid, km: km, ci: ci, rs: a[2], cg: a[5], lt: a[7], ds: a[9], tgi: tg[km] || null, unit: u ? u.unit : '', aen: u ? u.aen : '', srden: u ? u.srden : '' };
-          cells.push(c); byKey[c.key] = c; (byLid[L.lid] = byLid[L.lid] || []).push(c);
+          cells.push(c); byKey[c.key] = c; (byLid[L.lid] = byLid[L.lid] || []).push(c); var bk = byKm[L.lid] = byKm[L.lid] || {}; (bk[km] = bk[km] || []).push(c);
         });
         if (byLid[L.lid]) byLid[L.lid].fr = fr;
       });
     });
-    return { list: cells, byKey: byKey, byLid: byLid };
+    return { list: cells, byKey: byKey, byLid: byLid, byKm: byKm };
   };
   /** the cells an event covers (exact km range); [] when not placed exactly */
   PE.cellsOf = function (C, lid, km, m, km2, m2) {
     var L = C.byLid[lid]; if (!L || km == null) return [];
     var a = lin(km, m), b = lin(km2 != null ? km2 : km, m2 != null ? m2 : m); if (b < a) { var t = a; a = b; b = t; }
-    var out = []; for (var i = 0; i < L.length; i++) { var c = L[i], c0 = lin(c.km, c.ci * 200), c1 = c.ci === 4 ? lin(c.km + 1, 0) - 1 : c0 + 199; if (c0 <= b && a <= c1) out.push(c); }
+    var out = [], K = C.byKm && C.byKm[lid];
+    if (K) {   // [B3a] by km (fast): only the km the event touches
+      var k0 = Math.floor(a / 1000) - 1, k1 = Math.floor(b / 1000);
+      if (k1 - k0 > 60) { var ks = C.kmKeys && C.kmKeys[lid]; if (!ks) { ks = Object.keys(K).map(Number).sort(function (p, q) { return p - q; }); (C.kmKeys = C.kmKeys || {})[lid] = ks; } var kk = ks.filter(function (x) { return x >= k0 && x <= k1; }); for (var z = 0; z < kk.length; z++) { var A2 = K[kk[z]]; for (var j2 = 0; j2 < A2.length; j2++) { var y = A2[j2], y0 = lin(y.km, y.ci * 200), y1 = y.ci === 4 ? lin(y.km + 1, 0) - 1 : y0 + 199; if (y0 <= b && a <= y1) out.push(y); } } return out; }
+      for (var k = k0; k <= k1; k++) { var A = K[k]; if (!A) continue; for (var j = 0; j < A.length; j++) { var x = A[j], x0 = lin(x.km, x.ci * 200), x1 = x.ci === 4 ? lin(x.km + 1, 0) - 1 : x0 + 199; if (x0 <= b && a <= x1) out.push(x); } }
+      return out;
+    }
+    for (var i = 0; i < L.length; i++) { var c = L[i], c0 = lin(c.km, c.ci * 200), c1 = c.ci === 4 ? lin(c.km + 1, 0) - 1 : c0 + 199; if (c0 <= b && a <= c1) out.push(c); }
     return out;
   };
   /** contiguous cells -> stretches {lid, km, m, km2, m2, n, unit} */
@@ -1265,11 +1276,12 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     run: function (X) {
       var W = X.W, since = PE.addDays(X.today, -Math.round(W.repeatMonths * 30.4)); var by = {};
       X.cards.forEach(function (c) { if ((c.d || '') < since) return; var cs = PE.cellsOf(X.C, c.lid, c.km, c.m); if (cs.length) (by[cs[0].key] = by[cs[0].key] || []).push(c); });
+      var wByCell = {}; X.work.forEach(function (w) { if ((w.d || '') < since) return; PE.cellsOf(X.C, w.lid, w.km, w.m, w.km2, w.m2).forEach(function (x) { (wByCell[x.key] = wByCell[x.key] || []).push(w); }); });   // [B3a] once, not per cell
       var out = [];
       Object.keys(by).forEach(function (k) {
         var L = by[k]; var dates = {}; L.forEach(function (c) { dates[c.d] = 1; }); var nd = Object.keys(dates).length;
         if (nd < W.repeatCards || L.some(function (c) { return c.st === 'open'; })) return;
-        var c0 = X.C.byKey[k]; var wk = X.work.filter(function (w) { return (w.d || '') >= since && PE.cellsOf(X.C, w.lid, w.km, w.m, w.km2, w.m2).some(function (x) { return x.key === k; }); });
+        var c0 = X.C.byKey[k]; var wk = wByCell[k] || [];
         out.push({ lid: c0.lid, km: c0.km, m: c0.ci * 200, unit: c0.unit, n: L.length, d: Object.keys(dates).sort().pop(),
           title: 'Same 200 m: ' + L.length + ' cards on ' + nd + ' dates – closed every time',
           tms: L.length + ' separate cards, each closed', seen: 'one spot, ' + nd + ' inspections in ' + W.repeatMonths + ' months; work recorded here: ' + (wk.length ? wk.length + ' (' + wk.map(function (w) { return w.what; }).filter(Boolean).slice(0, 2).join(', ') + ')' : 'none') + ' – look for the cause, not one more closure' });

@@ -30,9 +30,11 @@ async function call(fn, args, opt = {}) {
   workStart(fn);
   try { return await call0(fn, args, opt); } finally { workEnd(); }
 }
+// [B3a] page calls give up after 90 s (the page itself never waits on them); admin loads / reads may take the server's full 5–6 minutes
+const LONG = { ingest: 1, fmcRead: 1, fmcRelocate: 1, fmcClean: 1, feedRead: 1 };
 async function call0(fn, args, opt = {}) {
   const body = JSON.stringify({ t: TOKEN, fn, args: args || {} }); let r;
-  try { const res = await fetchT(CFG.API, { method: 'POST', body, headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow' }, opt.timeout || 330000); r = await res.json(); }
+  try { const res = await fetchT(CFG.API, { method: 'POST', body, headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow' }, opt.timeout || (LONG[fn] ? 330000 : 90000)); r = await res.json(); }
   catch (e) { setNet(false); throw { error: e && e.message === 'timeout' ? 'The server did not answer in time. Try again in a minute.' : navigator.onLine === false ? 'No signal – this needs the network.' : 'Could not reach the server – try again.' }; }
   setNet(true);
   if (r.ok) return r.data;
@@ -54,9 +56,9 @@ async function unB64(b64) {
 // ---------- history files (cached on this device by Drive file id) ----------
 const MEM = {};
 async function files(want, note) {
-  const cached = (await ST.all('files').catch(() => [])).map(x => x.key);
+  const cached = await ST.keys('files').catch(() => []);   // [B3a] keys only – never load every cached file into memory
   let have = cached.slice(), list = [], more = true, n = 0;
-  while (more && n < 6) {
+  while (more && n < 30) {
     n++; if (note) note(n === 1 ? 'Asking the server (about 40 s)…' : 'Fetching the rest…');
     const r = await call('files', { want, have });
     list = r.list; more = r.more;
@@ -141,6 +143,6 @@ function landing() { const b = S.boot || {}; return b.role === 'admin' || !b.lev
 function drawWho() { const b = S.boot; if (!b) return; $('who').classList.remove('hidden'); $('whoRole').textContent = b.role === 'admin' ? 'Admin' : b.level === 'unit' ? 'Unit ' + (b.unit || '') : b.level === 'aen' ? (b.aen || 'AEN') : 'Viewer'; $('whoName').textContent = b.name || ''; }
 
 window.TMSC = { render };   // ui.js redraws on a language change
-window.HWHTP = { BOOTKEY, workStart, workEnd, CFG, ST, S, $, esc, dmy, B, call, files, merge, snap, gzB64, unB64, settings, names, locator, pageHead, modal, closeModal, toast, VIEWS, go, render, setNet, MEM };
+window.HWHTP = { token: () => TOKEN, BOOTKEY, workStart, workEnd, CFG, ST, S, $, esc, dmy, B, call, files, merge, snap, gzB64, unB64, settings, names, locator, pageHead, modal, closeModal, toast, VIEWS, go, render, setNet, MEM };
 document.addEventListener('DOMContentLoaded', () => { start().catch(e => console.error(e)); });
 })();

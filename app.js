@@ -15,7 +15,21 @@ let TOKEN = ''; try { TOKEN = localStorage.getItem('hwhtp.token') || ''; } catch
 
 // ---------- server calls ----------
 function fetchT(url, opt, ms) { return new Promise((res, rej) => { const c = new AbortController(); const t = setTimeout(() => { c.abort(); rej(new Error('timeout')); }, ms); fetch(url, Object.assign({ signal: c.signal }, opt)).then(r => { clearTimeout(t); res(r); }, e => { clearTimeout(t); rej(e); }); }); }
+// [PB] 03-Nov: every server call shows at once "Working… (server calls take 35–50 s)" with a running timer – the user must never wonder
+const WORK = { n: 0, t0: 0, timer: null, what: '' };
+const WHAT = { boot: 'Opening', files: 'Getting the data', ingest: 'Saving in Drive', feedRead: 'Reading the portal feed', fmcRead: 'Reading Field Mini Control', fmcRelocate: 'Placing the sheet records', fmcDaily: 'Changing the daily read', settingsSave: 'Saving the settings', linkMake: 'Making the link', linkList: 'Getting the links', linkSet: 'Changing the link', status: 'Checking the server' };
+function workShow() {
+  let b = $('working'); if (!b) { b = document.createElement('div'); b.id = 'working'; b.setAttribute('role', 'status'); b.style.cssText = 'position:fixed;right:16px;bottom:calc(var(--tabH,0px) + 16px);z-index:98;background:var(--accent);color:var(--onaccent);padding:10px 14px;border-radius:12px;font-size:14px;box-shadow:var(--shadow2);max-width:90vw'; document.body.appendChild(b); }
+  if (!WORK.n) { b.style.display = 'none'; clearInterval(WORK.timer); WORK.timer = null; return; }
+  const s = Math.round((Date.now() - WORK.t0) / 1000); b.style.display = 'block'; b.textContent = `${WORK.what}… working (server calls take 35–50 s) · ${s} s`;
+}
+function workStart(fn) { if (!WORK.n) WORK.t0 = Date.now(); WORK.n++; WORK.what = WHAT[fn] || 'Working'; workShow(); if (!WORK.timer) WORK.timer = setInterval(workShow, 1000); }
+function workEnd() { WORK.n = Math.max(0, WORK.n - 1); workShow(); }
 async function call(fn, args, opt = {}) {
+  workStart(fn);
+  try { return await call0(fn, args, opt); } finally { workEnd(); }
+}
+async function call0(fn, args, opt = {}) {
   const body = JSON.stringify({ t: TOKEN, fn, args: args || {} }); let r;
   try { const res = await fetchT(CFG.API, { method: 'POST', body, headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow' }, opt.timeout || 330000); r = await res.json(); }
   catch (e) { setNet(false); throw { error: e && e.message === 'timeout' ? 'The server did not answer in time. Try again in a minute.' : navigator.onLine === false ? 'No signal – this needs the network.' : 'Could not reach the server – try again.' }; }
@@ -112,6 +126,6 @@ async function start() {
 function drawWho() { const b = S.boot; if (!b) return; $('who').classList.remove('hidden'); $('whoRole').textContent = b.role === 'admin' ? 'Admin' : 'Viewer'; $('whoName').textContent = b.name || ''; }
 
 window.TMSC = { render };   // ui.js redraws on a language change
-window.HWHTP = { CFG, ST, S, $, esc, dmy, B, call, files, merge, snap, gzB64, unB64, settings, names, locator, pageHead, modal, closeModal, toast, VIEWS, go, render, setNet, MEM };
+window.HWHTP = { workStart, workEnd, CFG, ST, S, $, esc, dmy, B, call, files, merge, snap, gzB64, unB64, settings, names, locator, pageHead, modal, closeModal, toast, VIEWS, go, render, setNet, MEM };
 document.addEventListener('DOMContentLoaded', () => { start().catch(e => console.error(e)); });
 })();

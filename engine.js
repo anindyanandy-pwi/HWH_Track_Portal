@@ -38,6 +38,8 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     // a field line text ("REV/L", "DN/ML", "UP HBC - 1", "DN/TAK", "SL", "UP & DN") -> line key(s)
     function fieldLines(t) {
       var s = String(t || '').toUpperCase(); var out = [];
+      var first = s.split('\n')[0]; var nm = first.match(/\b(UP|DN|DOWN)\b[^0-9&+]{0,10}?(?:-\s*)?([1-4])\b(?!\s*\/)/);   // "UP HBC1", "DN HBC - 1", "DN 2" -> UP1 / DN1 / DN2
+      if (nm) { out.push((nm[1] === 'UP' ? 'UP' : 'DN') + nm[2]); return out; }
       if (/\bREV|REVERS/.test(s)) out.push('REV');
       if (/\bUP\b|^UP|UP\//.test(s) && !/CHORD/.test(s)) out.push('UP');
       if (/\bDN\b|^DN|DN\/|\bDOWN\b/.test(s) && !/CHORD/.test(s)) out.push('DN');
@@ -109,7 +111,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   };
   PE.noPhone = function (s) { return String(s == null ? '' : s).replace(/(\+?91[\s-]?)?\b[6-9]\d{9}\b/g, '[phone removed]'); };
   PE.stripName = function (s) { return String(s || '').replace(/\s*\([^)]*[a-z][^)]*\)\s*$/, '').trim(); };   // "JE/PW/KQU/Sec(Soumya …)" -> "JE/PW/KQU/Sec"
-  PE.empty = function (v) { var s = String(v == null ? '' : v).trim(); return !s || s === '---' || s === '-' || /^n\.?a\.?$/i.test(s); };
+  PE.empty = function (v) { var s = String(v == null ? '' : v).trim(); return !s || /^[-–—_.\s]*$/.test(s) || /^(n\.?a\.?|nil|none|no work|not applicable)$/i.test(s); };   // "---", "----", "NA", "NIL", "No work"
 })(PE);
 
 
@@ -122,7 +124,17 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
 (function (PE) {
   'use strict';
   /** hook for the OHE mast list (phase B: the user's list section+line+mast -> km/m). Returns null = not located. */
-  PE.mastToKm = PE.mastToKm || function (/* lidCandidates, mast */) { return null; };
+  // OHE mast <-> chainage hook (FOUNDATION D.1): the user's list comes later as rows {lid, mast, km, m}; key = section-line + mast (mast
+  // numbers repeat between sections). Until PE.setMasts is given a list, every mast stays "not placed – waiting for the mast list".
+  // Nothing is fetched from TMS for masts.
+  var MASTS = null;
+  PE.mastKey = function (t) { var m = String(t || '').toUpperCase().match(/(\d{2,6})(?:\s*\/\s*(\d{1,3}))?/); return m ? m[1] + (m[2] ? '/' + (+m[2]) : '') : ''; };
+  PE.setMasts = function (rows) { MASTS = {}; (rows || []).forEach(function (r) { var k = PE.mastKey(r.mast); if (!k || !r.lid) return; (MASTS[k] = MASTS[k] || []).push(r); }); return Object.keys(MASTS).length; };
+  PE.mastToKm = function (lids, mast) {
+    if (!MASTS) return null; var L = MASTS[PE.mastKey(mast)] || []; if (!L.length) return null;
+    var hit = lids && lids.length ? L.filter(function (r) { return lids.indexOf(r.lid) >= 0; }) : L;
+    return hit.length === 1 ? { lid: hit[0].lid, km: +hit[0].km, m: +hit[0].m || 0 } : null;
+  };
   PE.MAST_RE = /\b(?:ERH|OHE|MAST\s*NO\.?)\s*[-:]?\s*(\d{2,6}(?:\/\d{1,3})?)|\bE\s*-\s*(\d{3,6})\b/i;
   PE.ASSET_RE = /\b(?:PT|POINT|PTS|T\/?O|X-?ING)\.?\s*(?:NO|NOS)?\.?\s*[-:.]?\s*(\d{1,3}\s*[A-Z]?)\b/i;
 
@@ -133,51 +145,64 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     ((bs && bs.coa) || []).forEach(function (r) {
       if (!r.lid || r.a == null) return;
       lids[r.lid] = 1;
-      var o = { lid: r.lid, a: Math.min(r.a, r.b), b: Math.max(r.a, r.b) };
+      var ln = String(r.ln || '').toUpperCase().replace(/[^A-Z0-9]/g, '');   // COA line name: UPMAIN, DNHBC1, REVS …
+      var o = { lid: r.lid, a: Math.min(r.a, r.b), b: Math.max(r.a, r.b), ln: ln };
       [key2(r.f, r.t), key2(r.t, r.f)].forEach(function (k) { (byBs[k] = byBs[k] || []).push(o); });
-      if (r.f) (byStn[r.f] = byStn[r.f] || []).push({ lid: r.lid, p: r.a0 });
-      if (r.t) (byStn[r.t] = byStn[r.t] || []).push({ lid: r.lid, p: r.b0 });
+      if (r.f) (byStn[r.f] = byStn[r.f] || []).push({ lid: r.lid, p: r.a0, ln: ln });
+      if (r.t) (byStn[r.t] = byStn[r.t] || []).push({ lid: r.lid, p: r.b0, ln: ln });
     });
     var lineOk = function (lid, keys) { if (!keys || !keys.length) return true; var disp = keys.map(function (k) { return ' ' + N.lineDisplay(k); }); return disp.some(function (d) { return lid.slice(-d.length) === d; }); };
-    function pickLine(cands, keys) {
-      var seen = {}; cands = cands.filter(function (c) { if (seen[c.lid]) return false; seen[c.lid] = 1; return true; });
+    // [PB] 03-Nov: the field's line text is matched first to TMS's COA line name of the same block section ("DN HBC 1" = DNHBC1 -> BLY-SKG DN 1,
+    // "UP HBC" = UPHBC -> BLY-SKG Up Chord), then by line key (numbered: "UP HBC1" -> UP 1); one candidate line left = that line.
+    var nln = function (t) { var x = String(t || '').toUpperCase().replace(/\n[\s\S]*$/, '').replace(/[^A-Z0-9]/g, '').replace(/^DOWN/, 'DN'); return x.replace(/^(UP|DN)(ML|M|L|LINE|MAINLINE|MAIN)$/, '$1MAIN').replace(/^(UP|DN)SL$/, '$1SLOW'); };
+    function pickLine(cands, keys, lineText) {
+      var seen = {}; var all = cands; cands = cands.filter(function (c) { if (seen[c.lid]) return false; seen[c.lid] = 1; return true; });
+      var t = nln(lineText);
+      if (t.length >= 3) {
+        var ex = all.filter(function (c) { return c.ln && c.ln === t; });
+        if (!ex.length) ex = all.filter(function (c) { return c.ln && c.ln.length >= 4 && (t.indexOf(c.ln) === 0 || (c.ln.indexOf(t) === 0 && t.length >= 4)); });
+        var s2 = {}; ex = ex.filter(function (c) { if (s2[c.lid]) return false; s2[c.lid] = 1; return true; });
+        if (ex.length) return ex;
+      }
       var f = cands.filter(function (c) { return lineOk(c.lid, keys); });
       if (f.length) return f;
-      return keys && keys.length ? [] : cands;
+      if (keys && keys.length) { var plain = keys.filter(function (k) { return k === 'UP' || k === 'DN'; }); var f2 = cands.filter(function (c) { return plain.some(function (k) { return new RegExp(' ' + k + ' \\d$').test(c.lid); }); }); if (f2.length === 1) return f2; }
+      return cands.length === 1 ? cands : (keys && keys.length ? [] : cands);
     }
     function stationOf(text) {
       var t = String(text || '').toUpperCase().trim(); var m;
-      if ((m = t.match(/^([A-Z]{2,5})\s*(?:STN|STATION|ST\.|YD\b|YARD|SDG)/)) && byStn[m[1]]) return m[1];
-      if ((m = t.match(/\b([A-Z]{2,5})\s+(?:STN|STATION|ST\.)/)) && byStn[m[1]]) return m[1];
+      if ((m = t.match(/^([A-Z]{2,5})\s*-?\s*(?:STN|STATION|ST\b|ST\.|SNT LIMIT|YD\b|YARD|SDG)/)) && byStn[m[1]]) return m[1];
+      if ((m = t.match(/\b([A-Z]{2,5})\s+(?:STN|STATION|ST\b|ST\.)/)) && byStn[m[1]]) return m[1];
       if (/^[A-Z]{2,5}$/.test(t) && byStn[t]) return t;
       return null;
     }
     function bsOf(text) {
-      var t = String(text || '').toUpperCase(); var m = t.match(/\b([A-Z]{2,5})\s*(?:STN\s*LIMIT\s*)?-+\s*([A-Z]{2,5})\b/);
+      var t = String(text || '').toUpperCase(); var m = t.match(/\b([A-Z]{2,5})\s*(?:STN\s*(?:LIMIT|LMT|LT)\.?\s*)?-+\s*(?!STN\b|STATION\b|LIMIT\b|YARD\b|YD\b)([A-Z]{2,5})\b/);
       if (!m) { m = t.match(/\b([A-Z]{2,5})\s+TO\s+([A-Z]{2,5})\b/); }
       return m ? [m[1], m[2]] : null;
     }
     /** rec: {lid?, km?, m?, km2?, m2?, bsText?, lineText?, texts?: [..] (location / purpose / details), sectionText?} */
     function locate(rec) {
       var W = { lid: null, km: null, m: null, km2: null, m2: null, key: null, how: 'none', approx: false, note: '' };
-      var keys = rec.lineKeys || N.fieldLines(rec.lineText);
+      var keys = rec.lineKeys || N.fieldLines(rec.lineText); var lt = rec.lineText;
       var all = [rec.locText].concat(rec.texts || [], [rec.lineText]).filter(Boolean).join(' | ');
-      var kt = PE.kmText(rec.locText) || PE.kmText(String(rec.lineText || '').replace(/^.*?KM\s*[:\-]*/i, '')) || ((/\bkm/i).test(all) ? PE.kmText(all.replace(/^.*?\bkm\s*[:\-]*/i, '')) : null);
+      var kt = PE.kmText(rec.locText) || (/\bKM/i.test(rec.lineText || '') ? PE.kmText(String(rec.lineText).replace(/^[\s\S]*?\bKM\s*[:\-]*/i, '')) : null) || ((/\bkm/i).test(all) ? PE.kmText(all.replace(/^.*?\bkm\s*[:\-]*/i, '')) : null);
       var cands = [], range = null, how = 'none';
       if (rec.lid) { cands = [{ lid: rec.lid }]; }
       var bsp = bsOf(rec.bsText);
       if (!cands.length && bsp) {
         var c = byBs[bsp[0] + '-' + bsp[1]] || [];
-        if (c.length) { cands = pickLine(c, keys); how = 'blockSection'; }
+        if (c.length) { cands = pickLine(c, keys, lt); how = 'blockSection'; if (!cands.length) W.note = 'block section ' + bsp.join('-') + ' known, but line "' + String(lt || '').split('\n')[0].trim() + '" is not one TMS maps there'; }
         else if (byStn[bsp[0]] && byStn[bsp[1]]) {   // not adjacent stations: the stretch between them on a common line
           var A = byStn[bsp[0]], B = byStn[bsp[1]]; var both = [];
           A.forEach(function (x) { B.forEach(function (y) { if (x.lid === y.lid) both.push({ lid: x.lid, a: Math.min(x.p, y.p), b: Math.max(x.p, y.p) }); }); });
-          if (both.length) { cands = pickLine(both, keys); how = 'blockSection'; W.note = 'stations not adjacent'; }
+          if (both.length) { cands = pickLine(both, keys, lt); how = 'blockSection'; W.note = 'stations not adjacent'; }
         }
       }
       if (!cands.length) {
         var st = stationOf(rec.bsText) || (bsp ? null : stationOf(rec.lineText));
-        if (st) { var s = pickLine(byStn[st].map(function (x) { return { lid: x.lid, a: x.p, b: x.p, p: x.p }; }), keys); if (s.length) { cands = s; how = 'station'; W.note = 'station ' + st; } }
+        if (st && !cands.length) W.note = 'station ' + st + ' known, but line "' + String(lt || '').split('\n')[0].trim() + '" is not a line TMS maps there (yard / loop?)';
+        if (st) { var s = pickLine(byStn[st].map(function (x) { return { lid: x.lid, a: x.p, b: x.p, p: x.p, ln: x.ln }; }), keys, lt); if (s.length) { cands = s; how = 'station'; W.note = 'station ' + st; } }
       }
       // asset number (point / crossing) on a candidate line
       var am = all.match(PE.ASSET_RE);
@@ -189,6 +214,9 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       if (rec.km != null && rec.lid) {   // TMS record: km/m as given
         W.lid = rec.lid; W.km = +rec.km; W.m = +rec.m || 0; W.km2 = rec.km2 != null ? +rec.km2 : W.km; W.m2 = rec.m2 != null ? +rec.m2 : W.m; W.how = 'km'; W.key = PE.cellKey(W.lid, W.km, W.m); return W;
       }
+      // OHE mast numbers in the texts: kept on the record; placed exactly once the user's mast list is loaded (hook PE.mastToKm)
+      var masts = []; var mre = new RegExp(PE.MAST_RE.source, 'gi'), mm; while ((mm = mre.exec(all))) masts.push(mm[0].replace(/\s+/g, ''));
+      if (masts.length) { W.masts = masts; for (var mi = 0; mi < masts.length; mi++) { var mk0 = PE.mastToKm(cands.map(function (x) { return x.lid; }), masts[mi]); if (mk0) { W.lid = mk0.lid; W.km = mk0.km; W.m = mk0.m; W.km2 = mk0.km; W.m2 = mk0.m; W.how = 'mast'; W.key = PE.cellKey(W.lid, W.km, W.m); return W; } } }
       if (cands.length && kt) {   // field km on the block section's line
         W.lid = cands[0].lid; W.km = kt.km; W.m = kt.m; W.km2 = kt.km2; W.m2 = kt.m2; W.how = 'km'; W.key = PE.cellKey(W.lid, W.km, W.m);
         if (cands.length > 1) W.also = cands.slice(1).map(function (x) { return x.lid; });
@@ -202,7 +230,8 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
         return W;
       }
       var mast = all.match(PE.MAST_RE);
-      if (mast) { var mk = PE.mastToKm(cands.map(function (x) { return x.lid; }), mast[0]); if (mk) { W.lid = mk.lid; W.km = mk.km; W.m = mk.m; W.km2 = mk.km; W.m2 = mk.m; W.how = 'mast'; W.key = PE.cellKey(W.lid, W.km, W.m); return W; } W.how = 'mast'; W.note = 'OHE mast ' + mast[0] + ' – waiting for the mast list'; return W; }
+      if (mast) { W.how = 'mast'; W.note = 'OHE mast ' + mast[0] + ' – waiting for the mast list'; return W; }
+      if (W.note) return W;
       W.note = bsp ? 'block section ' + bsp.join('-') + ' not in the TMS mapping' : (rec.bsText ? 'place "' + String(rec.bsText).trim() + '" not recognised' : 'no place given');
       if (cands.length === 0 && (rec.bsText || rec.lineText) && keys.length === 0 && bsp) W.note += ' (line not given)';
       return W;
@@ -457,11 +486,26 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     return { records: records, blocks: blocks.map(function (b) { return { date: b.date, from: b.from, ok: b.ok, col: PE.colName(col0 + b.col) }; }), used: used.map(function (b) { return b.date; }), warnings: warnings };
   };
 
+  /** counts for the admin log: exact km (km in the text / point no. / mast) · block section or station only (approx) · not placed, with reasons */
+  PE.placeCounts = function (recs) {
+    var o = { total: recs.length, exact: 0, exactBy: {}, approx: 0, approxBy: {}, none: 0, reasons: {} };
+    recs.forEach(function (r) {
+      var w = r.where || {};
+      if (w.lid && !w.approx) { o.exact++; o.exactBy[w.how] = (o.exactBy[w.how] || 0) + 1; }
+      else if (w.lid) { o.approx++; o.approxBy[w.how] = (o.approxBy[w.how] || 0) + 1; }
+      else { o.none++; var k = String(w.note || 'not placed').replace(/"[^"]*"/g, '"…"').replace(/block section [A-Z]+-[A-Z]+ not/, 'block section not').replace(/station [A-Z]+ known/, 'station known').replace(/block section [A-Z]+-[A-Z]+ known/, 'block section known'); o.reasons[k] = (o.reasons[k] || 0) + 1; }
+    });
+    return o;
+  };
+  PE.placeText = function (c) {
+    var by = function (x) { return Object.keys(x).map(function (k) { return x[k] + ' ' + ({ km: 'by km in the text', asset: 'by point no.', mast: 'by OHE mast', blockSection: 'block section', station: 'station limit', section: 'section only' }[k] || k); }).join(', '); };
+    return c.total + ' records: ' + c.exact + ' at exact km' + (c.exact ? ' (' + by(c.exactBy) + ')' : '') + ' · ' + c.approx + ' block section / station only' + (c.approx ? ' (' + by(c.approxBy) + ')' : '') + ' · ' + c.none + ' not placed';
+  };
   /** locate the sheet records with the locator (block section / station / km in the caution location / point numbers) */
   PE.fmcLocate = function (recs, L) {
     return recs.map(function (r) {
-      var w = L.locate({ bsText: r.bs, lineText: r.line, locText: r.loc, texts: [r.purpose, r.details, r.reason] });
-      return Object.assign({}, r, { where: w });
+      var w = L.locate({ bsText: r.bs, lineText: r.line, locText: r.loc, texts: [r.purpose, r.details, r.reason, r.remarks] });
+      return Object.assign({}, r, { where: w, masts: w.masts || [] });
     });
   };
 })(PE);
@@ -621,9 +665,12 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
 
   /** reasons for the cell: [{lvl: 'Act'|'Watch'|'Info', code, text}] ; open actions [{text, kind}] */
   PE.cellReasons = function (items, prof, opts) {
-    var R = Object.assign({ tampMonths: 24, dsYears: 10, lifeWatch: 0.9, life: { '04': 800, '03': 525 }, backDays: 120, noActionDays: 7, tgi: { watch: 80, act: 50, urgent: 36 } }, (opts && opts.rules) || {});
+    var R = Object.assign({ tampMonths: 24, cleanCushionMm: 150, lifeWatch: 0.9, life: { '04': 800, '03': 525 }, backDays: 120, noActionDays: 7, tgi: { watch: 80, act: 50, urgent: 36 } }, (opts && opts.rules) || {});
     var today = (opts && opts.today) || new Date().toISOString().slice(0, 10);
     var out = [], acts = [];
+    // [PB] 03-Nov: only EXACTLY placed events are facts for the rules; events placed by block section / station only ("approx") are shown
+    // apart on the card as "nearby" and never drive a reason.
+    items = items.filter(function (i) { return !i.approx; });
     var work = items.filter(function (i) { return WORK[i.kind]; });
     var workNear = function (d, days) { return work.filter(function (w) { return w.d && Math.abs(PE.daysBetween(w.d, d)) <= days; }); };
     // 1. card closed with no action recorded and no matching work
@@ -645,10 +692,13 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     var tampD = [lt, mt && mt.d].filter(Boolean).sort().pop();
     if (tampD) { var mo = PE.daysBetween(tampD, today) / 30.4; if (mo > R.tampMonths) out.push({ lvl: 'Watch', code: 'tamp', text: 'last tamping ' + tampD + (lt === tampD ? ' (TMS)' : ' (machine progress)') + ' – ' + Math.floor(mo) + ' months ago (rule ' + R.tampMonths + ')' }); else out.push({ lvl: 'Info', code: 'tamp', text: 'last tamping ' + tampD + ' – ' + Math.floor(mo) + ' months ago' }); }
     else out.push({ lvl: 'Info', code: 'tamp', text: 'no tamping date in TMS for this stretch' });
-    // 5. deep screening age (TMS chart layer, else ballast changes here)
+    // 5. deep screening (user's rule, 03-Nov-2026): plan it when the CLEAN BALLAST CUSHION is below rules.cleanCushionMm (150 mm) – value from
+    //    TMS's ballast report (opts.cleanCushion, when that data is loaded). The date of the last deep screening is only a fact, never a reason.
+    var cc = opts && opts.cleanCushion;
+    if (cc && cc.mm != null) out.push({ lvl: +cc.mm < R.cleanCushionMm ? 'Act' : 'Info', code: 'cushion', text: 'clean ballast cushion ' + cc.mm + ' mm' + (cc.on ? ' (' + cc.on + ')' : '') + ' – ' + (+cc.mm < R.cleanCushionMm ? 'below ' + R.cleanCushionMm + ' mm: plan deep screening' : 'not below ' + R.cleanCushionMm + ' mm') + ' (TMS)' });
     var dsA = items.filter(function (i) { return i.kind === 'asset' && i.x.k === 'ballast' && /deep/i.test(i.x.t || i.x.sub || ''); }).map(function (i) { return i.d; }).sort().pop();
     var ds = [prof && prof.ds, dsA].filter(Boolean).sort().pop();
-    if (ds) { var y = PE.daysBetween(ds, today) / 365.25; out.push({ lvl: y > R.dsYears ? 'Watch' : 'Info', code: 'ds', text: 'deep screened ' + ds + ' – ' + Math.floor(y) + ' years ago' + (y > R.dsYears ? ' (rule ' + R.dsYears + ' years)' : '') }); }
+    if (ds) out.push({ lvl: 'Info', code: 'ds', text: 'last deep screening ' + ds + (prof && prof.ds === ds ? ' (TMS)' : ' (TMS ballast change)') });
     // 6. rail GMT carried vs life (TMS)
     if (prof && prof.cg != null && R.life[prof.rs]) { var f = prof.cg / R.life[prof.rs]; out.push({ lvl: f >= 1 ? 'Act' : f >= R.lifeWatch ? 'Watch' : 'Info', code: 'gmt', text: 'rail has carried ' + prof.cg + ' GMT of ' + R.life[prof.rs] + ' GMT life (' + Math.round(f * 100) + ' %, TMS)' }); }
     // 7. TMS TGI of the km

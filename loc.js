@@ -83,7 +83,8 @@ async function showCard(box, lid, km, m) {
   const R = PE.cellReasons(items, prof, { rules: S.rules, today, tgi: tg ? tg[2] : null, packages: pk });
   const unit = D.units.find(u => u.level === 2 && u.a && u.b && PE.P(u.a[0], u.a[1]) <= PE.P(km, m) && PE.P(km, m) < PE.P(u.b[0], u.b[1])) || D.units.find(u => u.a && u.b && PE.P(u.a[0], u.a[1]) <= PE.P(km, m) && PE.P(km, m) < PE.P(u.b[0], u.b[1]));
   const cards = items.filter(i => i.kind === 'card'); const yr = cards.filter(i => PE.daysBetween(i.d, today) <= 365);
-  const work = items.filter(i => /tmsWork|asset|machine|sheetWork|appWork/.test(i.kind));
+  const work = items.filter(i => !i.approx && /tmsWork|asset|machine|sheetWork|appWork/.test(i.kind));
+  const near = items.filter(i => i.approx);
   const kpi = (cls, l, v, s) => { const b = B(l); return `<div class="kpi ${cls}"><div class="l">${esc(b.p)}</div>${b.s ? `<div class="lh">${esc(b.s)}</div>` : ''}<div class="v">${v}</div><div class="s">${s}</div></div>`; };
   const nav = d => { let K = km, c = ci + d; if (c < 0) { K--; c = 4; } if (c > 4) { K++; c = 0; } return `${lid}|${K}|${c * 200}`; };
   box.innerHTML = `
@@ -95,23 +96,26 @@ async function showCard(box, lid, km, m) {
     ${kpi(R.reasons.some(r => r.lvl === 'Act') ? 'crit' : R.reasons.some(r => r.lvl === 'Watch') ? 'warn' : 'ok', 'Reasons', R.reasons.filter(r => r.lvl !== 'Info').length, 'rules that fire here')}
     ${kpi(cards.some(c => c.x.st === 'open') ? 'crit' : 'ok', 'Open actions', R.actions.length, 'open cards, jobs, gaps')}
     ${kpi(yr.length >= 3 ? 'warn' : 'ok', 'Spot cards', yr.length, 'last 12 months · ' + cards.length + ' in all')}
-    ${kpi('acc', 'Work done', work.length, 'TMS, sheet and app records')}
+    ${kpi('acc', 'Work done', work.length, 'placed exactly here' + (near.length ? ' · +' + near.length + ' nearby (block section only)' : ''))}
   </div>
   <div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 8px">${UI.t('Reasons')}</h3>${R.reasons.length ? `<ul class="rlist" style="margin:0;padding-left:0;list-style:none">${R.reasons.map(r => `<li style="margin:6px 0"><span class="tag ${LV[r.lvl]}">${r.lvl === 'Info' ? 'Fact' : r.lvl}</span> ${esc(r.text)}</li>`).join('')}</ul>` : '<div class="muted">No rule fires here with the data loaded.</div>'}</div></div>
   <div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 8px">${UI.t('Open actions')}</h3>${R.actions.length ? `<ul style="margin:0;padding-left:18px">${R.actions.map(a => `<li>${esc(a.text)}</li>`).join('')}</ul>` : '<div class="muted">Nothing open here.</div>'}</div></div>
   ${profilePanel(prof, D, km, ci, tg)}
   ${runPanel(D, km, ci, items, tg)}
-  <div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 8px">${UI.t('Timeline')} <span class="small muted">${items.length} events · newest first · approx = placed by block section / station only</span></h3>${timeline(items)}</div></div>`;
+  <div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 8px">${UI.t('Timeline')} <span class="small muted">${items.length - near.length} events placed exactly here · newest first</span></h3>${timeline(items.filter(i => !i.approx))}${nearby(near)}</div></div>`;
   box.querySelectorAll('[data-k]').forEach(b => b.onclick = () => go('loc', b.dataset.k));
 }
 function profilePanel(p, D, km, ci, tg) {
   if (!p) return `<div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 8px">${UI.t('Fixed profile')}</h3><div class="muted">No TMS chart data for this stretch yet (Admin → Load TMS data loads the chart files and GMT).</div></div></div>`;
   const row = (l, v) => v == null || v === '' ? '' : `<tr><th style="text-align:left;font-weight:500;width:45%">${esc(l)}</th><td>${esc(v)}</td></tr>`;
   const pos = PE.P(km, ci * 200 + 100);
-  const g = ((D.hd && D.hd.gmt) || []).filter(x => x[1] <= pos && pos < x[2] && x[3] != null).slice(-8);
+  // GMT by year (TMS): one value per financial year – the narrowest stretch that holds this 200 m (a year listed twice in TMS is shown once)
+  const gy = {}; ((D.hd && D.hd.gmt) || []).filter(x => x[1] <= pos && pos < x[2] && x[3] != null).forEach(x => { const o = gy[x[0]]; if (!o || (x[2] - x[1]) < (o[2] - o[1])) gy[x[0]] = x; else if (o && (x[2] - x[1]) === (o[2] - o[1]) && x[3] !== o[3]) o.alt = x[3]; });
+  const g = Object.keys(gy).sort().slice(-8).map(k => gy[k]);
   return `<div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 8px">${UI.t('Fixed profile')} <span class="small muted">TMS track health chart – TMS's figures</span></h3>
-  <div class="scroll"><table class="t compact"><tbody>${row('Rail', [RS[p.rs] || p.rs, p.rg].filter(Boolean).join(' · '))}${row('Rail laid', p.rl)}${row('GMT carried by the rail', p.cg)}${row('GMT per year (traffic density)', p.gy)}${row('Last tamping', [p.lt, p.lm].filter(Boolean).join(' · '))}${row('Last deep screening', p.ds)}${row('Sleeper', p.sl)}${row('Last USFD test', p.ut)}${row('Speed restriction', p.sr ? p.sr + ' km/h' : '')}${row('Curve', p.cv)}${row('Bridge', p.br)}${row('LWR', p.lw)}${row('Last renewal', p.rn)}${row('Weak formation', p.wf ? 'yes' : '')}${row('Critical location', p.cl)}</tbody></table></div>
-  ${g.length ? `<div class="small" style="margin-top:8px"><b>GMT by year</b> (TMS): ${g.map(x => `${esc(x[0])}: ${x[3]}`).join(' · ')}</div>` : ''}</div></div>`;
+  <div class="scroll"><table class="t compact"><tbody>${row('Rail', [RS[p.rs] || p.rs, p.rg].filter(Boolean).join(' · '))}${row('Rail laid', p.rl)}${row('GMT carried by the rail', p.cg)}${row('GMT per year (traffic density)', p.gy)}${row('Last tamping', [p.lt, p.lm].filter(Boolean).join(' · '))}${row('Last deep screening', p.ds)}${row('Sleeper', p.sl)}${row('Last USFD test', p.ut)}${row('Curve', p.cv)}${row('Bridge', p.br)}${row('LWR', p.lw)}${row('Last renewal', p.rn)}${row('Weak formation', p.wf ? 'yes' : '')}${row('Critical location', p.cl)}</tbody></table></div>
+  ${p.sr ? '<div class="small muted" style="margin-top:6px">Speed restriction: TMS figure not used (TMS SR data not proper) – your own PSR/TSR file will be shown here when it is loaded.</div>' : ''}
+  ${g.length ? `<div class="small" style="margin-top:8px"><b>GMT by year</b> (TMS): ${g.map(x => `${esc(x[0])}: ${x[3]}${x.alt != null ? ' (also ' + x.alt + ')' : ''}`).join(' · ')}</div>` : ''}</div></div>`;
 }
 function runPanel(D, km, ci, items, tg) {
   const tq = D.tq; const row = tq ? tq.rows.find(r => r[0] <= km && km < r[1]) || tq.rows.find(r => r[0] === km) : null;
@@ -121,7 +125,7 @@ function runPanel(D, km, ci, items, tg) {
   const jobs = items.filter(i => i.kind === 'job' && /TRC|OMS/i.test((i.x.type || '') + (i.x.src || '')));
   return `<div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 8px">${UI.t('Run history')}</h3>
    ${tg ? `<div><b>TMS track geometry index (TGI) of km ${km}</b>: ${tg[2].map(r => `${r[0]}${r[1] ? ' (' + esc(r[1]) + (r[2] ? '/' + esc(r[2]) : '') + ')' : ''}`).join(' → older: ')}</div>` : ''}
-   ${row ? `<div style="margin-top:6px"><b>TQI, latest six runs (TMS report 17), km ${row[0]}–${row[1]}</b><div class="scroll"><table class="t compact"><thead><tr>${tq.runs.map(r => `<th>${esc(dmy(r.d))} ${esc(r.l || '')}</th>`).join('')}</tr></thead><tbody><tr>${row[2].map(v => `<td>${v == null ? '—' : v}</td>`).join('')}</tr></tbody></table></div></div>` : '<div class="small muted">No TQI six-run table for this km yet.</div>'}
+   ${row ? `<div style="margin-top:6px"><b>TQI, latest six runs (TMS report 17), km ${row[0]}–${row[1]}</b><div class="scroll"><table class="t compact"><thead><tr>${tq.runs.map(r => `<th>${esc(dmy(r.d))} ${esc(r.l || '')}</th>`).join('')}</tr></thead><tbody><tr>${row[2].map(v => `<td>${v == null ? '—' : v}</td>`).join('')}</tr></tbody></table></div></div>` : (tq ? `<div class="small muted">TMS's six-run TQI table for ${esc(D.lid)} covers km ${tq.rows.length ? tq.rows[0][0] + '–' + tq.rows[tq.rows.length - 1][1] : '—'}; km ${km} is not in it${(() => { const n = tq.rows.slice().sort((a, b) => Math.abs(a[0] - km) - Math.abs(b[0] - km))[0]; return n ? ` (nearest: km ${n[0]}–${n[1]}: ${n[2].map(v => v == null ? '—' : v).join(' · ')})` : ''; })()}.</div>` : '<div class="small muted">No TQI six-run table from TMS for this line yet.</div>')}
    <div style="margin-top:6px"><b>TRC runs over this km</b> (TMS run list, from Mar-2023): ${runs.length ? runs.slice(0, 12).map(r => `${dmy(r.d)}${r.x.let ? '/' + esc(r.x.let) : ''}`).join(' · ') + (runs.length > 12 ? ' …' : '') : '<span class="muted">none listed</span>'}</div>
    <div style="margin-top:6px"><b>ITMS runs</b>: ${itms.length ? itms.slice(0, 8).map(r => `${dmy(r.d)}/${esc(r.let)} (${r.files.length} reports on the office PC: ${esc(r.folder || '')})`).join('; ') : '<span class="muted">none fetched for this line yet</span>'}</div>
    <div style="margin-top:6px"><b>TRC / OMS / ITMS defects here</b> (spot cards): ${geo.length ? geo.slice(0, 10).map(i => `${dmy(i.d)} ${esc(i.x.src)} – ${esc(i.x.ob)} (${esc(i.x.st)})`).join('; ') : '<span class="muted">none</span>'}</div>
@@ -158,6 +162,13 @@ function timeline(items) {
   const L = items.filter(i => i.kind !== 'trcRun');
   if (!L.length) return '<div class="muted">No event recorded in this 200 m.</div>';
   return `<div class="scroll"><table class="t compact"><thead><tr><th>Date</th><th>Source</th><th>What</th><th>Who</th><th>Evidence</th></tr></thead><tbody>${L.slice(0, 400).map(i => `<tr><td class="nw">${dmy(i.d)}</td><td class="small">${esc(SRC[i.kind] || i.kind)}${i.approx ? ' <span class="tag t3">approx</span>' : ''}</td><td class="wrap">${what(i)}</td><td class="small">${esc(i.kind === 'job' || i.kind === 'appWork' ? i.x.u : (i.x.by || i.x.who || i.x.done || i.x.u || ''))}</td><td class="small">${evRefs(i)}</td></tr>`).join('')}</tbody></table></div>${L.length > 400 ? `<div class="pager">${L.length} events – newest 400 shown</div>` : ''}`;
+}
+function nearby(L) {
+  if (!L.length) return '';
+  const rng = i => { const w = i.kind === 'sheetWork' ? (i.x.where || {}) : i.x; return w.km != null ? `${PE.fmtKm(w.km, w.m)}–${PE.fmtKm(w.km2, w.m2)}` : ''; };
+  const span = L.map(i => { const w = i.kind === 'sheetWork' ? (i.x.where || {}) : i.x; return w.km != null && w.km2 != null ? Math.abs(PE.P(w.km2, w.m2) - PE.P(w.km, w.m)) / 10000 : 0; });
+  return `<details style="margin-top:10px"><summary class="small"><b>Nearby – block section / station only</b> (${L.length} events, ranges up to ${Math.round(Math.max(...span) * 10) / 10} km) – not placed exactly, not counted, not used by the rules</summary>
+   <div class="scroll"><table class="t compact"><thead><tr><th>Date</th><th>Source</th><th>Range</th><th>What</th><th>OHE mast</th></tr></thead><tbody>${L.slice(0, 300).map(i => `<tr><td class="nw">${dmy(i.d)}</td><td class="small">${esc(SRC[i.kind] || i.kind)}</td><td class="small nw">${rng(i)}</td><td class="wrap">${what(i)}</td><td class="small">${esc(((i.x.masts && i.x.masts.length ? i.x.masts : (i.x.where && i.x.where.masts) || [])).join(', '))}</td></tr>`).join('')}</tbody></table></div></details>`;
 }
 H.lineData = lineData; H.evRefs = evRefs;
 })();

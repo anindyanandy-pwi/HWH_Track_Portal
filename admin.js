@@ -7,6 +7,8 @@ const H = window.HWHTP, UI = window.UI; const { $, esc, dmy, call, gzB64, names,
 const panel = (title, inner, extra = '') => `<div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 8px">${esc(title)} ${extra}</h3>${inner}</div></div>`;
 const fmtB = n => n > 1e6 ? (n / 1e6).toFixed(1) + ' MB' : n > 1e3 ? Math.round(n / 1e3) + ' kB' : n + ' B';
 const nowStamp = () => new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+/** an inline "working… N s" line under a button – shown at once, counts every second until stop() */
+function ticking(box, text) { const t0 = Date.now(); const draw = () => { box.innerHTML = `<div class="busy small"><b>${esc(text)}</b> – working… (server calls take 35–50 s) · ${Math.round((Date.now() - t0) / 1000)} s</div>`; }; draw(); const i = setInterval(draw, 1000); return () => clearInterval(i); }
 
 // ---------- folder source: File System Access handle (Chrome / Edge) or a folder chosen with <input webkitdirectory> ----------
 function srcFromHandle(root) {
@@ -26,16 +28,26 @@ let SRC = null;
 async function savedHandle() { try { return await ST.get('kv', 'tmsDir'); } catch (e) { return null; } }
 
 VIEWS.load = async (el) => {
+  // [PB] 03-Nov: one plain button. The folder is kept on this PC; Chrome asks once per visit to read it again ("Use the folder chosen before").
   el.innerHTML = pageHead('Load TMS data', 'From the TMS Collector\'s track-health files on this PC – only presses not loaded before') +
-    panel('1. The folder', `<p class="small">Choose the folder <b>TMS KPI\\Track health monitoring\\TMS data</b> once; this PC remembers it.</p>
-      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" id="ldPick">Choose the TMS data folder</button><button class="btn secondary hidden" id="ldAgain">Use the folder chosen before</button>
-      <label class="btn secondary" style="cursor:pointer">Other browsers: pick folder<input id="ldInput" type="file" webkitdirectory multiple style="display:none"></label></div><div id="ldFolder" class="small muted" style="margin-top:6px"></div>`) +
+    panel('1. The folder', `<div id="ldAsk"></div><input id="ldInput" type="file" webkitdirectory multiple style="display:none"><div id="ldFolder" class="small muted" style="margin-top:6px"></div>`) +
     `<div id="ldPrev"></div><div id="ldRun"></div>`;
-  $('ldPick').onclick = async () => { if (!window.showDirectoryPicker) { toast('This browser cannot keep a folder – use "Other browsers: pick folder"', true); return; } try { const d = await window.showDirectoryPicker({ id: 'hwhtp-tms', mode: 'read' }); await ST.set('kv', 'tmsDir', d).catch(() => { }); SRC = srcFromHandle(d); preview(); } catch (e) { if (e.name !== 'AbortError') toast(e.message, true); } };
+  const pick = async () => {
+    if (!window.showDirectoryPicker) { $('ldInput').click(); return; }
+    try { const d = await window.showDirectoryPicker({ id: 'hwhtp-tms', mode: 'read' }); await ST.set('kv', 'tmsDir', d).catch(() => { }); SRC = srcFromHandle(d); preview(); } catch (e) { if (e.name !== 'AbortError') toast(e.message, true); }
+  };
   $('ldInput').onchange = e => { if (!e.target.files.length) return; SRC = srcFromList(e.target.files); preview(); };
   const h = await savedHandle();
-  if (h && h.queryPermission) { $('ldAgain').classList.remove('hidden'); $('ldAgain').textContent = 'Use "' + h.name + '" (chosen before)'; $('ldAgain').onclick = async () => { if ((await h.queryPermission({ mode: 'read' })) !== 'granted' && (await h.requestPermission({ mode: 'read' })) !== 'granted') { toast('Permission not given', true); return; } SRC = srcFromHandle(h); preview(); }; }
-  if (SRC) preview();
+  const ask = $('ldAsk');
+  if (SRC) { ask.innerHTML = `<div class="small">Folder: <b>${esc(SRC.name)}</b> <a href="#" id="ldOther">choose another</a></div>`; $('ldOther').onclick = e => { e.preventDefault(); pick(); }; preview(); return; }
+  if (h && h.queryPermission) {
+    ask.innerHTML = `<button class="btn primary" id="ldAgain" style="font-size:16px;padding:12px 18px">Use the folder chosen before: ${esc(h.name)}</button> <a href="#" id="ldOther" class="small" style="margin-left:10px">choose another folder</a><p class="small muted">Chrome asks once each visit whether the portal may read it – click "Allow" / "View files".</p>`;
+    $('ldAgain').onclick = async () => { try { if ((await h.queryPermission({ mode: 'read' })) !== 'granted' && (await h.requestPermission({ mode: 'read' })) !== 'granted') { toast('Permission not given', true); return; } SRC = srcFromHandle(h); preview(); } catch (e) { pick(); } };
+    $('ldOther').onclick = e => { e.preventDefault(); pick(); };
+  } else {
+    ask.innerHTML = `<button class="btn primary" id="ldPick" style="font-size:16px;padding:12px 18px">Choose the folder: Track health monitoring\\TMS data</button><p class="small muted">It is in TMS KPI\\Track health monitoring\\TMS data on this PC. Choose it once – the portal remembers it.</p>`;
+    $('ldPick').onclick = pick;
+  }
 };
 
 let PLAN = null;
@@ -96,7 +108,9 @@ async function run(force) {
         const parts = []; for (const f of p.files) parts.push(await readJson(kind + '/' + f));
         const F = PE.combineParts(parts); F.pressId = F.pressId || p.pressId;
         const sl = PE.slimPress(kind, F, { N, L, recentFrom });
-        say(`   ${sl.count} records, ${sl.located} placed on a section-line, ${sl.unlocated} not placed${sl.unlocatedSample[0] ? ' (e.g. ' + JSON.stringify(sl.unlocatedSample[0]).slice(0, 160) + ')' : ''}`);
+        if (kind === 'blockSections') say(`   ${sl.count} block sections in TMS's mapping – ${sl.extra.located} tied to a TMS section-line and km, ${sl.extra.notInTms} not in TMS. This is the LOCATING TABLE (used to place other records), not events.`);
+        else if (kind === 'machineProg') { const h = {}; Object.values(sl.byGroup).flat().forEach(x => { const k = x.approx ? (x.how === 'section' ? 'section only' : 'block section / station only') : 'exact km'; h[k] = (h[k] || 0) + 1; }); say(`   ${sl.count} machine days with work: ${Object.entries(h).map(([k, v]) => v + ' ' + k).join(', ')}${sl.unlocated ? ', ' + sl.unlocated + ' not placed' : ''} (OHE masts in the remarks kept for the mast list)`); }
+        else say(`   ${sl.count} records, ${sl.located} placed on a section-line, ${sl.unlocated} not placed${sl.unlocatedSample[0] ? ' (e.g. ' + JSON.stringify(sl.unlocatedSample[0]).slice(0, 160) + ')' : ''}`);
         const files = [];
         for (const g of Object.keys(sl.byGroup)) { const a = sl.byGroup[g]; files.push({ group: g, rows: a.length, b64: await gzB64(JSON.stringify(a)) }); }
         if (sl.all && sl.all.length) files.push({ group: '_all', rows: kind === 'blockSections' ? sl.count : sl.all.length, b64: await gzB64(JSON.stringify(sl.all)) });
@@ -137,6 +151,7 @@ async function send(kind, pressId, at, files, summary, force, say) {
     const r = await call('ingest', { kind, pressId, at, part: i + 1, parts: parts.length, files: parts[i], summary: i === parts.length - 1 ? summary : null, force });
     if (r.skipped) { say('   already loaded (' + r.reason + ') – skipped'); return; }
     say(`   saved ${r.files} file(s) in Drive${r.complete ? ' – done' : ''}`);
+    if (r.fmcPlaced) say(r.fmcPlaced.ok ? '   Field Mini Control records placed again: ' + Object.entries(r.fmcPlaced.tabs).map(([t, x]) => t + ' – ' + x.text).join('; ') : '   Field Mini Control records not placed again: ' + r.fmcPlaced.error);
   }
 }
 
@@ -145,16 +160,16 @@ VIEWS.fmc = async (el) => {
   const b = H.S.boot || {}; const F = b.fmc || {}; const last = F.lastRead || {};
   el.innerHTML = pageHead('Read Field Mini Control', 'READ ONLY – tabs "PWI at Block Site" and "PWI at Work Site", newest day blocks since the last read') +
     panel('Read now', `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn primary" id="fmGo">Read Field Mini Control now</button><label class="small">first day to read (optional) <input type="date" id="fmFrom"></label><label class="small"><input type="checkbox" id="fmDaily" ${F.daily ? 'checked' : ''}> read every day by itself</label></div><p class="small muted">Takes about a minute. Nothing is written to the sheet; its cache tabs are never read. A day block whose headings changed is not read – it is listed as "layout changed".</p><div id="fmOut"></div>`) +
-    panel('Last read', Object.keys(last).length ? `<div class="scroll"><table class="t compact"><thead><tr><th>Tab</th><th>When</th><th>Days read</th><th>Records</th><th>Placed</th><th>Warnings</th></tr></thead><tbody>${Object.entries(last).map(([t, x]) => `<tr><td>${esc(t)}</td><td class="nw">${esc(String(x.at || '').slice(0, 16).replace('T', ' '))}</td><td class="small">${esc((x.used || []).join(', '))}</td><td>${x.records}</td><td>${x.located}</td><td>${x.warnings ? `<b class="od">${x.warnings}</b>` : 0}</td></tr>`).join('')}</tbody></table></div>` : '<div class="muted">Not read yet.</div>');
+    panel('Last read', Object.keys(last).length ? `<div class="scroll"><table class="t compact"><thead><tr><th>Tab</th><th>When</th><th>Days read</th><th>Records</th><th>Exact km</th><th>Block section / station only</th><th>Not placed</th><th>Warnings</th></tr></thead><tbody>${Object.entries(last).map(([t, x]) => `<tr><td>${esc(t)}</td><td class="nw">${esc(String(x.at || '').slice(0, 16).replace('T', ' '))}</td><td class="small">${esc((x.used || []).join(', '))}</td><td>${x.records}</td><td>${x.exact ?? '—'}</td><td>${x.approx ?? '—'}</td><td>${x.notPlaced ?? (x.records - x.located)}</td><td>${x.warnings ? `<b class="od">${x.warnings}</b>` : 0}</td></tr>`).join('')}</tbody></table></div>` : '<div class="muted">Not read yet.</div>');
   $('fmDaily').onchange = async e => { try { await call('fmcDaily', { on: e.target.checked }); toast(e.target.checked ? 'Daily read switched on' : 'Daily read switched off'); } catch (x) { toast(x.error, true); e.target.checked = !e.target.checked; } };
   $('fmGo').onclick = async () => {
-    $('fmGo').disabled = true; $('fmOut').innerHTML = '<div class="busy small">Reading… (about a minute)</div>';
+    $('fmGo').disabled = true; const stop = ticking($('fmOut'), 'Reading Field Mini Control (about 1–3 minutes)');
     try {
-      const r = await call('fmcRead', { from: $('fmFrom').value || undefined });
-      $('fmOut').innerHTML = r.tabs.map(t => `<div class="panel" style="padding:10px 12px;margin-top:8px"><b>${esc(t.tab)}</b>: ${t.records} records from ${t.used.length} day block(s) (${esc(t.used.join(', '))}) · placed ${t.located} · <b class="${t.unlocated ? 'od' : ''}">not placed ${t.unlocated}</b>${t.warnings.length ? `<div class="od small" style="margin-top:4px">${t.warnings.map(w => esc((w.date ? w.date + ' ' : '') + (w.col ? 'column ' + w.col + ': ' : '') + w.msg + (w.expected ? ' – expected "' + w.expected.join('", "') + '", found "' + (w.found || []).join('", "') + '"' : ''))).join('<br>')}</div>` : ''}${t.unlocatedSample.length ? `<details class="small"><summary>not placed (${t.unlocated})</summary><ul>${t.unlocatedSample.map(x => `<li>${esc(x.date)} ${esc(x.unit)} – ${esc(x.place)} ${esc(x.line)}: ${esc(x.why)}</li>`).join('')}</ul></details>` : ''}</div>`).join('') + `<div class="small muted">${Math.round(r.ms / 1000)} s on the server</div>`;
+      const r = await call('fmcRead', { from: $('fmFrom').value || undefined }); stop();
+      $('fmOut').innerHTML = r.tabs.map(t => `<div class="panel" style="padding:10px 12px;margin-top:8px"><b>${esc(t.tab)}</b>: ${t.used.length} day block(s) (${esc(t.used.join(', '))})<div>${esc(t.placeText || (t.records + ' records'))}</div>${t.place && t.place.none ? `<div class="small">Not placed – reasons: ${Object.entries(t.place.reasons).sort((a, b) => b[1] - a[1]).map(([k, v]) => v + ' × ' + esc(k)).join(' · ')}</div>` : ''}${t.warnings.length ? `<div class="od small" style="margin-top:4px">${t.warnings.map(w => esc((w.date ? w.date + ' ' : '') + (w.col ? 'column ' + w.col + ': ' : '') + w.msg + (w.expected ? ' – expected "' + w.expected.join('", "') + '", found "' + (w.found || []).join('", "') + '"' : ''))).join('<br>')}</div>` : ''}${t.unlocatedSample.length ? `<details class="small"><summary>not placed (${t.unlocated})</summary><ul>${t.unlocatedSample.map(x => `<li>${esc(x.date)} ${esc(x.unit)} – ${esc(x.place)} ${esc(x.line)}: ${esc(x.why)}</li>`).join('')}</ul></details>` : ''}</div>`).join('') + `<div class="small muted">${Math.round(r.ms / 1000)} s on the server</div>`;
       if (VIEWS.reg.clear) VIEWS.reg.clear(); if (VIEWS.loc.clear) VIEWS.loc.clear();
       H.S.boot = await call('boot').catch(() => H.S.boot);
-    } catch (e) { $('fmOut').innerHTML = `<div class="od">${esc(e.error || e)}</div>`; }
+    } catch (e) { stop(); $('fmOut').innerHTML = `<div class="od">${esc(e.error || e)}</div>`; }
     $('fmGo').disabled = false;
   };
 };
@@ -167,7 +182,7 @@ VIEWS.feed = async (el) => {
     panel('Portal feed', `<div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))"><div class="kpi ${age.stale ? 'crit' : 'ok'}"><div class="l">Feed age</div><div class="v">${age.hours == null ? '—' : age.hours + '<small> h</small>'}</div><div class="s">${f.generatedAt ? 'written by TMS Control ' + esc(String(f.generatedAt).slice(0, 16).replace('T', ' ')) : 'not read yet'}${age.stale ? ' – <b>older than ' + ((H.settings().feed || {}).warnHours || 36) + ' h</b>' : ''}</div></div><div class="kpi"><div class="l">Read by the portal</div><div class="v small" style="font-size:18px">${esc(String(f.readAt || '—').slice(0, 16).replace('T', ' '))}</div><div class="s">daily trigger + Read now</div></div></div>
     ${f.counts ? `<div class="small" style="margin-top:8px">${Object.entries(f.counts).map(([k, v]) => `${esc(k)}: <b>${v}</b>`).join(' · ')}</div>` : ''}${f.error ? `<div class="od small">Last error: ${esc(f.error)}</div>` : ''}
     <div style="margin-top:10px"><button class="btn primary" id="fdGo">Read now</button> <label class="small"><input type="checkbox" id="fdForce"> even if unchanged</label></div><div id="fdOut" class="small" style="margin-top:8px"></div>`);
-  $('fdGo').onclick = async () => { $('fdGo').disabled = true; $('fdOut').textContent = 'Reading… (about 40 s)'; try { const r = await call('feedRead', { force: $('fdForce').checked }); $('fdOut').innerHTML = r.ok ? (r.unchanged ? 'Unchanged since the last read – skipped.' : 'Read: ' + esc(JSON.stringify(r.counts))) : `<span class="od">${esc(r.error)}</span>`; H.S.boot = await call('boot'); if (VIEWS.loc.clear) VIEWS.loc.clear(); if (VIEWS.reg.clear) VIEWS.reg.clear(); } catch (e) { $('fdOut').innerHTML = `<span class="od">${esc(e.error || e)}</span>`; } $('fdGo').disabled = false; };
+  $('fdGo').onclick = async () => { $('fdGo').disabled = true; const stop = ticking($('fdOut'), 'Reading the portal feed'); try { const r = await call('feedRead', { force: $('fdForce').checked }); stop(); $('fdOut').innerHTML = r.ok ? (r.unchanged ? 'Unchanged since the last read – skipped.' : 'Read: ' + esc(JSON.stringify(r.counts))) : `<span class="od">${esc(r.error)}</span>`; H.S.boot = await call('boot'); if (VIEWS.loc.clear) VIEWS.loc.clear(); if (VIEWS.reg.clear) VIEWS.reg.clear(); } catch (e) { stop(); $('fdOut').innerHTML = `<span class="od">${esc(e.error || e)}</span>`; } $('fdGo').disabled = false; };
 };
 
 // ---------- viewer links ----------
@@ -183,7 +198,7 @@ async function copy(t) { try { await navigator.clipboard.writeText(t); toast('Co
 
 // ---------- settings ----------
 const FIELDS = [['web.appUrl', 'App address (GitHub Pages)', 'text'], ['feed.warnHours', 'Feed warning after (hours)', 'number'], ['feed.readHourIST', 'Daily feed read (hour IST)', 'number'], ['fmc.firstReadDays', 'First Field Mini Control read: days back', 'number'], ['fmc.overlapDays', 'Days read again each time (late entries)', 'number'], ['fmc.dailyHourIST', 'Daily sheet read (hour IST)', 'number'],
-  ['match.dayTol', 'Work package: days apart allowed', 'number'], ['match.kmTolM', 'Work package: metres apart allowed', 'number'], ['match.cardDays', 'Card compliance: days around the work', 'number'], ['rules.tampMonths', 'Rule: tamping older than (months)', 'number'], ['rules.dsYears', 'Rule: deep screening older than (years)', 'number'], ['rules.backDays', 'Rule: defect back within (days after work)', 'number'], ['rules.noActionDays', 'Rule: no work within (days of card closing)', 'number']];
+  ['match.dayTol', 'Work package: days apart allowed', 'number'], ['match.kmTolM', 'Work package: metres apart allowed', 'number'], ['match.cardDays', 'Card compliance: days around the work', 'number'], ['rules.tampMonths', 'Rule: tamping older than (months)', 'number'], ['rules.cleanCushionMm', 'Rule: plan deep screening when clean ballast cushion is below (mm)', 'number'], ['rules.backDays', 'Rule: defect back within (days after work)', 'number'], ['rules.noActionDays', 'Rule: no work within (days of card closing)', 'number']];
 const getp = (o, p) => p.split('.').reduce((a, k) => a == null ? a : a[k], o); const setp = (o, p, v) => { const k = p.split('.'); let a = o; k.slice(0, -1).forEach(x => { a = a[x] = a[x] && typeof a[x] === 'object' ? a[x] : {}; }); a[k[k.length - 1]] = v; };
 VIEWS.settings = async (el) => {
   el.innerHTML = pageHead('Settings', 'Division-specific values live here, not in the program (portability)') + '<div id="stBox" class="muted">Loading…</div>';

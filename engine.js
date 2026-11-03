@@ -255,14 +255,54 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   // numbers repeat between sections). Until PE.setMasts is given a list, every mast stays "not placed – waiting for the mast list".
   // Nothing is fetched from TMS for masts.
   var MASTS = null;
-  PE.mastKey = function (t) { var m = String(t || '').toUpperCase().match(/(\d{2,6})(?:\s*\/\s*(\d{1,3}))?/); return m ? m[1] + (m[2] ? '/' + (+m[2]) : '') : ''; };
-  PE.setMasts = function (rows) { MASTS = {}; (rows || []).forEach(function (r) { var k = PE.mastKey(r.mast); if (!k || !r.lid) return; (MASTS[k] = MASTS[k] || []).push(r); }); return Object.keys(MASTS).length; };
+  // [C] mast number normalised: case, spaces, prefixes "AC" / "M" / "SE" / "TP" / "OHE" / "MAST NO" removed; "42 / 10 a" -> "42/10A", "4602" -> "4602"
+  PE.mastKey = function (t) { var s = String(t || '').toUpperCase().replace(/\b(OHE\s*MAST|MAST\s*NO\.?|MAST|OHE|TP|AC|SE|M)\b\.?/g, ' ').replace(/\s+/g, ''); var m = s.match(/(\d{1,3})\/(\d{1,3})([A-Z]?)/) || s.match(/^[-:]*(\d{2,6})([A-Z]?)$/); if (!m) return ''; return m[3] !== undefined ? (+m[1]) + '/' + (+m[2]) + m[3] : (+m[1]) + (m[2] || ''); };
+  PE.setMasts = function (rows) { if (!rows) { MASTS = null; return 0; } MASTS = {}; (rows || []).forEach(function (r) { var k = PE.mastKey(r.mast); if (!k || !r.lid) return; (MASTS[k] = MASTS[k] || []).push(r); }); return Object.keys(MASTS).length; };
+  PE.mastsLoaded = function () { return !!MASTS; };
   PE.mastToKm = function (lids, mast) {
     if (!MASTS) return null; var L = MASTS[PE.mastKey(mast)] || []; if (!L.length) return null;
     var hit = lids && lids.length ? L.filter(function (r) { return lids.indexOf(r.lid) >= 0; }) : L;
     return hit.length === 1 ? { lid: hit[0].lid, km: +hit[0].km, m: +hit[0].m || 0 } : null;
   };
-  PE.MAST_RE = /\b(?:ERH|OHE|MAST\s*NO\.?)\s*[-:]?\s*(\d{2,6}(?:\/\d{1,3})?)|\bE\s*-\s*(\d{3,6})\b/i;
+  // [C] a real OHE mast in a text: "TP 42/10", "OHE 42/10A", "mast no 42/10", "MAST 4602". "ERH-4602" / "E-476" are ENGINE RUNNING HOURS of a machine (user, 03-Nov) – never a mast.
+  PE.MAST_RE = /\b(?:TP|OHE(?:\s*MAST)?|MAST(?:\s*NO\.?)?)\s*[-:.]?\s*(?:AC|SE|M)?\s*(\d{1,3}\s*\/\s*\d{1,3}[A-Z]?|\d{2,6}[A-Z]?)\b/i;
+  PE.ERH_RE = /\b(?:ERH|E)\s*[-:.]?\s*(\d{2,6}(?:\.\d+)?)\b/i;
+  // [C] mast RANGES written in TMS mast format in remarks (user, 03-Nov): "37/20A-28A" (37/20A to 37/28A), "18/29-21/00" (18/29 to 21/00),
+  // "km 5/03-07" (5/3 to 5/7). A date ("03/11/2026") is not a range: no '/' or digit right before, no '/' right after.
+  PE.MAST_RANGE_RE = /(?:\bkm\.?\s*)?(?<![\/\d])(\d{1,3})\s*\/\s*(\d{1,3}[A-Z]?)\s*(?:-|–|\bto\b)\s*(?:(\d{1,3})\s*\/\s*)?(\d{1,3}[A-Z]?)\b(?!\s*\/)/gi;
+  PE.mastRanges = function (text) {
+    var out = [], re = new RegExp(PE.MAST_RANGE_RE.source, 'gi'), m;
+    while ((m = re.exec(String(text || '')))) out.push({ txt: m[0].trim(), from: (+m[1]) + '/' + m[2], to: (m[3] != null ? +m[3] : +m[1]) + '/' + m[4] });
+    return out;
+  };
+  /** both ends of a mast range on one section-line -> {lid, km, m, km2, m2} | null */
+  PE.mastRangeToKm = function (lids, rg) {
+    if (!MASTS) return null; var a = MASTS[PE.mastKey(rg.from)] || [], b = MASTS[PE.mastKey(rg.to)] || [];
+    if (lids && lids.length) { a = a.filter(function (r) { return lids.indexOf(r.lid) >= 0; }); b = b.filter(function (r) { return lids.indexOf(r.lid) >= 0; }); }
+    var pairs = []; a.forEach(function (x) { b.forEach(function (y) { if (x.lid === y.lid) pairs.push([x, y]); }); });
+    if (pairs.length !== 1) return null; var x = pairs[0][0], y = pairs[0][1];
+    var px = (+x.km) * 10000 + (+x.m || 0), py = (+y.km) * 10000 + (+y.m || 0); if (px > py) { var t = x; x = y; y = t; }
+    return { lid: x.lid, km: +x.km, m: +x.m || 0, km2: +y.km, m2: +y.m || 0 };
+  };
+  /** [C] RDPS masts vs the TMS mast list, per section-line that both cover. TMS stays the reference; RDPS only flags.
+   *  rdpsAll: [[lid, km, m, lat, lon, kind, label]…] (rdps _all), masts: TMS oheMast rows {lid, mast, km, m}. Distance in metres (1 km = 1000 m). */
+  PE.rdpsMastCheck = function (rdpsAll, masts, tolM) {
+    tolM = tolM || 50; var R = {}, T = {}, out = { far: [], onlyRdps: [], onlyTms: [], lines: [] };
+    (rdpsAll || []).forEach(function (p) { if (!p || p[5] !== 'mast' || !p[0]) return; var k = PE.mastKey(p[6]); if (!k) return; (R[p[0]] = R[p[0]] || {})[k] = { km: +p[1], m: +p[2] || 0, t: p[6] }; });
+    (masts || []).forEach(function (r) { if (!r || !r.lid) return; var k = PE.mastKey(r.mast); if (!k) return; (T[r.lid] = T[r.lid] || {})[k] = { km: +r.km, m: +r.m || 0, t: r.mast }; });
+    Object.keys(R).filter(function (l) { return T[l]; }).sort().forEach(function (lid) {
+      var a = R[lid], b = T[lid], n = { lid: lid, both: 0, far: 0, onlyRdps: 0, onlyTms: 0 };
+      Object.keys(a).forEach(function (k) {
+        if (!b[k]) { n.onlyRdps++; out.onlyRdps.push({ lid: lid, mast: k, km: a[k].km, m: a[k].m }); return; }
+        n.both++; var d = Math.round(Math.abs((a[k].km - b[k].km) * 1000 + (a[k].m - b[k].m)));
+        if (d > tolM) { n.far++; out.far.push({ lid: lid, mast: k, rdps: [a[k].km, a[k].m], tms: [b[k].km, b[k].m], dM: d }); }
+      });
+      Object.keys(b).forEach(function (k) { if (!a[k]) { n.onlyTms++; out.onlyTms.push({ lid: lid, mast: k, km: b[k].km, m: b[k].m }); } });
+      out.lines.push(n);
+    });
+    out.rdpsOnlyLines = Object.keys(R).filter(function (l) { return !T[l]; }).sort();
+    return out;
+  };
   PE.ASSET_RE = /\b(?:PT|POINT|PTS|T\/?O|X-?ING)\.?\s*(?:NO|NOS)?\.?\s*[-:.]?\s*(\d{1,3}\s*[A-Z]?)\b/i;
 
   /** ctx from the slim blockSections file {coa:[...], yards:[...]} + optional asset index {"lid|88A": [km, m]} */
@@ -342,6 +382,9 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
         W.lid = rec.lid; W.km = +rec.km; W.m = +rec.m || 0; W.km2 = rec.km2 != null ? +rec.km2 : W.km; W.m2 = rec.m2 != null ? +rec.m2 : W.m; W.how = 'km'; W.key = PE.cellKey(W.lid, W.km, W.m); return W;
       }
       // OHE mast numbers in the texts: kept on the record; placed exactly once the user's mast list is loaded (hook PE.mastToKm)
+      var rgs = PE.mastRanges(all);
+      if (rgs.length) { W.mastRanges = rgs.map(function (r) { return r.txt; }); var lidsC = cands.map(function (x) { return x.lid; });
+        for (var ri = 0; ri < rgs.length; ri++) { var rk = PE.mastRangeToKm(lidsC, rgs[ri]); if (rk) { W.lid = rk.lid; W.km = rk.km; W.m = rk.m; W.km2 = rk.km2; W.m2 = rk.m2; W.how = 'mast'; W.note = 'OHE masts ' + rgs[ri].from + ' to ' + rgs[ri].to; W.key = PE.cellKey(W.lid, W.km, W.m); return W; } } }
       var masts = []; var mre = new RegExp(PE.MAST_RE.source, 'gi'), mm; while ((mm = mre.exec(all))) masts.push(mm[0].replace(/\s+/g, ''));
       if (masts.length) { W.masts = masts; for (var mi = 0; mi < masts.length; mi++) { var mk0 = PE.mastToKm(cands.map(function (x) { return x.lid; }), masts[mi]); if (mk0) { W.lid = mk0.lid; W.km = mk0.km; W.m = mk0.m; W.km2 = mk0.km; W.m2 = mk0.m; W.how = 'mast'; W.key = PE.cellKey(W.lid, W.km, W.m); return W; } } }
       if (cands.length && kt) {   // field km on the block section's line
@@ -356,8 +399,9 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
         if (cands.length > 1) W.also = cands.slice(1).map(function (x) { return x.lid; });
         return W;
       }
+      if (rgs.length) { W.how = 'mast'; W.note = 'OHE masts ' + rgs[0].from + ' to ' + rgs[0].to + (PE.mastsLoaded() ? ' – not both in the TMS mast list for this line' : ' – TMS mast list not loaded yet'); return W; }
       var mast = all.match(PE.MAST_RE);
-      if (mast) { W.how = 'mast'; W.note = 'OHE mast ' + mast[0] + ' – waiting for the mast list'; return W; }
+      if (mast) { W.how = 'mast'; W.note = 'OHE mast ' + mast[0].replace(/\s+/g, ' ') + (PE.mastsLoaded() ? ' – not in the TMS mast list for this line' : ' – TMS mast list not loaded yet'); return W; }
       if (W.note) return W;
       W.note = bsp ? 'block section ' + bsp.join('-') + ' not in the TMS mapping' : (rec.bsText ? 'place "' + String(rec.bsText).trim() + '" not recognised' : 'no place given');
       if (cands.length === 0 && (rec.bsText || rec.lineText) && keys.length === 0 && bsp) W.note += ' (line not given)';
@@ -376,8 +420,8 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
 var PE = (typeof PE !== 'undefined' && PE) || {};
 (function (PE) {
   'use strict';
-  PE.KINDS = ['blockSections', 'workSite', 'spotCards', 'assetChange', 'machineProg', 'trcRuns', 'tqiSix', 'condition', 'itms', 'ballastCushion', 'tampingDue'];
-  PE.KIND_LABEL = { blockSections: 'Block sections', workSite: 'Work sites', spotCards: 'Spot attention cards', assetChange: 'Asset changes', machineProg: 'Machine progress', trcRuns: 'TRC run list', tqiSix: 'TQI six runs', condition: 'Condition layers', itms: 'ITMS runs', ballastCushion: 'Ballast cushion (asset register)', tampingDue: 'Tamping due (PML / CBML, turnouts)', health: 'Track health (chart + GMT)' };
+  PE.KINDS = ['blockSections', 'workSite', 'spotCards', 'assetChange', 'machineProg', 'trcRuns', 'tqiSix', 'condition', 'itms', 'ballastCushion', 'tampingDue', 'oheMast', 'rdps'];
+  PE.KIND_LABEL = { blockSections: 'Block sections', workSite: 'Work sites', spotCards: 'Spot attention cards', assetChange: 'Asset changes', machineProg: 'Machine progress', trcRuns: 'TRC run list', tqiSix: 'TQI six runs', condition: 'Condition layers', itms: 'ITMS runs', ballastCushion: 'Ballast cushion (asset register)', tampingDue: 'Tamping due (PML / CBML, turnouts)', oheMast: 'OHE mast list (TMS)', rdps: 'RDPS route survey', health: 'Track health (chart + GMT)' };
 
   /** several part files of one press -> one object with the record arrays joined */
   PE.combineParts = function (files) {
@@ -466,11 +510,12 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
           var n = row._n || {}; if (row._cont || !n.section) return;
           var g = function (k) { return s(row[k]); };
           var rmk = s(n.remark || row.Remark);
-          var masts = []; var re = /\b(?:ERH|E)\s*-\s*\d{3,6}\b/gi, mm; while ((mm = re.exec(rmk))) masts.push(mm[0].replace(/\s+/g, ''));
+          // [C] "ERH-4602" / "E-476" = the machine's ENGINE RUNNING HOURS (kept per machine per day; hours worked = difference between days); a real mast only as "TP 42/10" etc.
+          var erhM = rmk.match(PE.ERH_RE); var masts = []; var re = new RegExp(PE.MAST_RE.source, 'gi'), mm; while ((mm = re.exec(rmk))) masts.push(mm[0].replace(/\s+/g, ''));
           var r = { id: 'mp' + day.asOn + '|' + (row['Sr#'] || '') + '|' + n.machine, d: day.asOn, mc: n.machine, sec: n.section, ln: n.line, bs: n.between,
             dem: g('Block > Block Demanded hh:mm'), giv: g('Block > Block Given hh:mm'), eff: g('Block > Reported Effective Time hh:mm'),
             trk: g('Work Done in Block Given > Track > Kms.No(UTV)'), tos: g('Work Done in Block Given > Track > T/Outs'), pct: g('Percentage(%) Work Done to Stipulated Output'),
-            who: PE.desig(rmk), masts: masts };
+            who: PE.desig(rmk), masts: masts, mastRanges: PE.mastRanges(rmk).map(function (x) { return x.txt; }), erh: erhM ? +erhM[1] : null };
           if (!r.dem && !r.giv && !r.trk && !r.tos) return;   // a day with no block and no output: not a work event
           var w = ctx.L ? ctx.L.locate({ bsText: r.bs || r.sec, lineText: r.ln, lineKeys: [N.lineKey(r.ln)].filter(Boolean), texts: [rmk] }) : { how: 'none' };
           var sl = N.lineId(r.sec, r.ln);
@@ -535,6 +580,39 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       });
       all = (R.summary || []).map(function (x) { return { lid: lidOf(x.section, x.line), tkm: x.tkm, pml: x.pmlDue, cbml: x.cbmlPlain, pxing: x.cbmlPxing, pred: x.prediction }; });
       extra = F.counts || {};
+    }
+    else if (kind === 'oheMast') {
+      // [C] TMS OHE mast / hecto post report: section or station, line / loop / crossover, mast no., chainage km + m. Main-line masts by section-line;
+      // loop / crossover masts by station + line name. Non-mast rows (TP, ELF, Mile end, x END) are skipped.
+      var mrows = R.masts || R.rows || F.rows || [];
+      mrows.forEach(function (x, i) {
+        var sec = x.section || x.sectionStation || x['Section/Station'] || '', ln = x.line || x['Line/Loopline/Xover'] || '', no = String(x.mast || x.mastNo || x['OHE Mast No.'] || '').trim();
+        var km = x.km != null ? +x.km : +x['Chainage km'], m = x.m != null ? +x.m : +x['m'];
+        if (!no || /^(TP|ELF|MILE|.*END)$/i.test(no) || isNaN(km)) return;
+        var pos = String(x.pos || x.position || x.kind || 'main').toLowerCase();
+        var lid = /loop|cross|xover/.test(pos) ? null : lidOf(sec, ln);
+        var r = { id: 'om' + i, lid: lid, stn: lid ? '' : s(sec).toUpperCase(), ln: ln, mast: no, key: PE.mastKey ? PE.mastKey(no) : no, km: km, m: m || 0, pos: pos };
+        count++; all.push(r); if (!lid && !r.stn) miss(r, 'section/line not known');
+      });
+      extra = { rows: count, main: all.filter(function (r) { return r.lid; }).length };
+    }
+    else if (kind === 'rdps') {
+      // [C] RDPS survey points (prepared file, HWH lines): each point -> the TMS section-line of its route that covers its km (settings.rdps.routes,
+      // line extents from the TMS chart). RDPS supports – it never overrides TMS. Points: [km, m, lat, lon, kind, label].
+      var RT = (ctx.S && ctx.S.rdps && ctx.S.rdps.routes) || {}; var EX = ctx.extents || {}; var cov = {};
+      (R.files || []).forEach(function (fl) {
+        var rt = RT[fl.file]; if (!rt) { extra.unmapped = (extra.unmapped || []).concat([fl.file]); return; }
+        var lids = []; rt.sections.forEach(function (sc) { rt.lines.forEach(function (ln) { var l = lidOf(sc, ln); if (l && lids.indexOf(l) < 0) lids.push(l); }); });
+        (fl.points || []).forEach(function (pt) {
+          var P = PE.P(pt[0], pt[1]); var lid = null;
+          for (var i = 0; i < lids.length && !lid; i++) { var e = EX[lids[i]]; if (e && P >= e[0] - 500 && P <= e[1] + 500) lid = lids[i]; }
+          var r = { f: fl.file, lid: lid, km: pt[0], m: pt[1], la: pt[2], lo: pt[3], k: pt[4], t: pt[5] };
+          count++; if (lid) { put(by, lid, r); var c = cov[lid] = cov[lid] || { n: 0, masts: 0, a: P, b: P, files: {} }; c.n++; if (pt[4] === 'mast') c.masts++; c.a = Math.min(c.a, P); c.b = Math.max(c.b, P); c.files[fl.file] = 1; }
+          else if (pt[4] !== 'kmpost') miss(r, 'km not on any TMS line of this route');
+          if (pt[4] !== 'kmpost' && pt[4] !== 'other') all.push(pt[4] === 'mast' ? [lid || '', pt[0], pt[1], pt[2], pt[3], pt[4], pt[5]] : [lid || '', pt[0], pt[1], pt[2], pt[3], pt[4]]);   // mast label kept for the cross-check with the TMS mast list
+        });
+      });
+      extra.coverage = Object.keys(cov).map(function (l) { var c = cov[l]; return { lid: l, points: c.n, masts: c.masts, a: c.a, b: c.b, files: Object.keys(c.files) }; });
     }
     else if (kind === 'itms') {
       // ITMS press file: records.runs [{section, line, runId, run, date, kmFrom, kmTo, folder, files:[{name, rep, size}]}]; the PDFs stay on the PC
@@ -817,6 +895,60 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       var e = r.ev && r.ev[k]; if (e) return e.t === 'text' && PE.empty(e.text);
       return PE.empty(r[k]);   // text proof (AEN check, greasing)
     });
+  };
+
+  // ---------------------------------------------------------------- [C] the work package told in plain words (project doc LANDING "Work package")
+  PE.PROOF_NAME = { preImg: 'pre-work photo', postImg: 'post-work photo', certSafety: 'safety-staff certificate', certAgency: 'agency counselling certificate', certWork: 'work-details certificate',
+    video: 'counselling video', pdf: 'signed measurement PDF', aenCheck: 'AEN check', greasing: 'gauge-face greasing photo', greasingImg: 'gauge-face greasing photo' };
+  PE.proofName = function (k) { return PE.PROOF_NAME[k] || String(k).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase(); };
+  PE.BAND = { matched: { t: 'In both – Field Mini Control and TMS', c: 'ok' }, 'sheet only': { t: 'Only in Field Mini Control – not entered in TMS', c: 'bad' },
+    'tms only': { t: 'Only in TMS – no record in Field Mini Control', c: 'warn' }, 'not checked': { t: 'Not compared yet – Field Mini Control not read for that day', c: 'neu' } };
+  var dm = function (d) { if (!d) return ''; var x = String(d).length > 10 && PE.istDate ? PE.istDate(d) : String(d).slice(0, 10); var m = x.match(/^(\d{4})-(\d\d)-(\d\d)$/); return m ? m[3] + '-' + m[2] + '-' + m[1] : x; };   // dd-mm-yyyy (IST for a date-time)
+  var kmT = function (o) { return o && o.km != null ? 'km ' + PE.fmtKm(o.km, o.m) + (o.km2 != null && (o.km2 !== o.km || o.m2 !== o.m) ? '–' + PE.fmtKm(o.km2, o.m2) : '') : ''; };
+  var sse = function (u) { return 'SSE/P.Way/' + (u || '?'); };
+  /** -> {band, bandCls, fmcLine, tmsLine, sentence, searched, todo[], side[[label, sheet, tms, differs]], proofs[{name, state, where}], blockNote, placed, related[{what, why}], source} */
+  PE.packageStory = function (p) {
+    var r = p.fmc, w = p.ws[0], B = PE.BAND[p.outcome] || { t: p.outcome, c: 'neu' }, o = { band: B.t, bandCls: B.c, todo: [], side: [], proofs: [], related: [] };
+    var placeF = r ? [r.bs, r.line].filter(Boolean).join(', ') : '', placeW = w ? (w.lid || [w.sec, w.ln].filter(Boolean).join(' ')) + (kmT(w) ? ' ' + kmT(w) : '') : '';
+    var d1 = PE.addDays(p.date, -1), d2 = PE.addDays(p.date, 1);
+    o.fmcLine = r ? 'Field Mini Control: ' + r.tab + ', ' + dm(r.date) + (placeF ? ', ' + placeF : '') + (r.purpose || r.details ? ' – ' + (r.purpose || r.details) : '') : p.outcome === 'not checked' ? 'Field Mini Control: not read for ' + dm(p.date) + ' – not compared' : 'Field Mini Control: no record found';
+    o.tmsLine = w ? 'TMS work site: no. ' + w.tid + ', ' + dm(w.d) + ', ' + placeW + (w.sub || w.wt ? ' – ' + (w.sub || w.wt) : '') + (p.ws.length > 1 ? ' (+' + (p.ws.length - 1) + ' more site the same day)' : '') : 'TMS work site: none found';
+    if (p.outcome === 'matched') { o.sentence = 'This work is in both: Field Mini Control and a TMS work site of unit ' + p.u + '.'; o.searched = 'Matched on date (± 1 day), unit ' + p.u + ', line' + (r && r.where && r.where.lid && w.lid ? ' and km' : '') + '.'; }
+    else if (p.outcome === 'sheet only') { o.sentence = 'Done in the field (Field Mini Control) but not entered in TMS.'; o.searched = 'Searched TMS work sites of unit ' + p.u + ', ' + dm(d1) + ' to ' + dm(d2) + (placeF ? ', ' + placeF : '') + ': none found.'; o.todo.push(sse(p.u) + ' to enter this work in TMS – Work Site entry.'); }
+    else if (p.outcome === 'tms only') { o.sentence = 'Entered in TMS but there is no record of it in Field Mini Control.'; o.searched = 'Searched Field Mini Control rows of unit ' + p.u + ', ' + dm(d1) + ' to ' + dm(d2) + ': none found.'; o.todo.push(sse(p.u) + ' to record it in Field Mini Control with proof.'); }
+    else { o.sentence = 'Entered in TMS; Field Mini Control was not read for that day, so it is not compared yet.'; o.searched = 'Field Mini Control has no read for ' + dm(p.date) + ' (or the night before).'; }
+    // proofs – ALL are required for every work
+    if (r) {
+      var miss = PE.proofMissing(r);
+      PE.proofCells(r).forEach(function (k) { var e = r.ev && r.ev[k]; var m = miss.indexOf(k) >= 0;
+        o.proofs.push({ k: k, name: PE.proofName(k), state: m ? 'blank in your sheet' : e && e.t === 'link' ? 'in sheet (link)' : e && e.t === 'img' ? 'in sheet (image in the cell)' : 'in sheet', ok: !m, url: e && e.t === 'link' ? e.url : '', cell: e && e.cell || '' }); });
+      if (miss.length) o.todo.push(sse(p.u) + ' to add the missing proof in Field Mini Control: ' + miss.map(PE.proofName).join(', ') + '.');
+      var isBlock = /Block/.test(r.tab || '');
+      o.blockNote = isBlock ? (r.timing ? '' : 'Traffic block time: not filled in your sheet (required in PWI at Block Site).') : (r.timing ? '' : 'Traffic block details are not required in PWI at Work Site – blank is not a gap.');
+      if (isBlock && !r.timing) o.todo.push(sse(p.u) + ' to fill the traffic block time in Field Mini Control (PWI at Block Site).');
+    }
+    if (w) o.proofs.push({ k: 'tmsPhotos', name: 'TMS site photos / track parameters', state: (w.att || []).length ? (w.att || []).length + ' attached in TMS' : 'none attached in TMS', ok: (w.att || []).length > 0, tms: true });
+    // side by side
+    var blkF = r ? (r.timing || (/Block/.test(r.tab || '') ? 'not filled in your sheet' : 'not required (PWI at Work Site)')) : '', blkW = w ? (w.bFrom && w.bTo ? w.bFrom + '–' + w.bTo + (w.bAv ? ' (' + w.bAv + ' of ' + (w.bDem || '?') + ' min demanded)' : '') : 'not entered in TMS') : '';
+    var row = function (l, a, b) { o.side.push([l, a, b, !!(a && b && String(a).toLowerCase() !== String(b).toLowerCase())]); };
+    row('Date', r ? dm(r.date) + (r.from && r.from !== r.date ? ' (night from ' + dm(r.from) + ')' : '') : '—', w ? dm(w.d) : '—');
+    row('Place', r ? (placeF || 'not given') + (r.where && r.where.lid && !r.where.approx ? ' → ' + r.where.lid + ' ' + kmT(r.where) : '') : '—', w ? placeW : '—');
+    row('Block time', r ? blkF : '—', w ? blkW : '—');
+    row('Work', r ? [r.purpose, r.reason, r.details].filter(Boolean).join(' · ') || 'blank in your sheet' : '—', w ? [w.sub || w.wt, w.prog].filter(Boolean).join(' · ') : '—');
+    row('By', r ? (r.who || 'blank in your sheet') : '—', w ? (w.by || 'not given in TMS') : '—');
+    o.side.forEach(function (x) { if (x[1] === '—' || x[2] === '—' || x[0] === 'Work' || x[0] === 'By') x[3] = false; });
+    // placement
+    var W = r && r.where || {};
+    o.placed = w && w.lid ? 'Placed by the TMS work site: ' + w.lid + ' ' + kmT(w) + '.' : W.lid && !W.approx ? 'Placed exactly: ' + W.lid + ' ' + kmT(W) + (W.how === 'mast' ? ' (from the OHE mast list)' : W.how === 'asset' ? ' (from the point number)' : ' (km written in the sheet)') + '.'
+      : W.lid ? (W.how === 'station' ? 'Station only' : 'Block section only') + ' – ' + W.lid + '; the sheet gives no km, the exact 200 m is not known.' : 'Not placed: ' + (W.note || 'place not recognised') + '.';
+    // related records ± 1 day, explained
+    var a = p.att || { ac: [], mp: [], fw: [], sc: [] };
+    a.sc.forEach(function (x) { o.related.push({ what: 'Spot card ' + (x.src || '') + (x.it ? ' – ' + x.it : '') + (x.p ? ', priority P' + x.p : '') + (x.ob ? ', ' + x.ob : '') + ', closed ' + dm(x.cmp || x.d16), why: 'closed within 3 days of this work at the same place' }); });
+    a.ac.forEach(function (x) { o.related.push({ what: 'TMS asset change: ' + x.k + (x.t ? ' ' + x.t : '') + ', ' + dm(x.d), why: 'same place, ± 1 day' }); });
+    a.mp.forEach(function (x) { o.related.push({ what: 'TMS machine progress: ' + x.mc + ', ' + dm(x.d) + (x.approx ? ' (block section only)' : ''), why: 'same block section / place, ± 1 day' }); });
+    a.fw.forEach(function (x) { o.related.push({ what: 'TMS Control work record: ' + (x.types || []).join(', ') + ', ' + dm(x.d), why: 'same place, ± 1 day' }); });
+    o.source = r ? 'Field Mini Control → ' + r.tab + ', cell ' + String(r.cell || '').split('!')[1] : 'TMS → Work Site no. ' + (w ? w.tid : '?');
+    return o;
   };
 })(PE);
 
@@ -1171,7 +1303,8 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
         (L.c || []).forEach(function (a) {
           var km = a[0], ci = a[1], pos = PE.P(km, ci * 200 + 100);
           // [B3a] the chart's line extent is padded to the section's range: a 200 m cell with no rail, GMT, tamping or TGI data is not track of this line
-          if (!a[2] && a[5] == null && !a[7] && !tg[km]) return;
+          var nz = function (v) { return v != null && v !== '' && v !== '0' && v !== '-'; };   // TMS fills a line's unknown stretch with '0' (e.g. SKG–BWN UP 1 at 95–106.5 km)
+          if (!nz(a[2]) && a[5] == null && !nz(a[7])) return;   // [C] an old TGI value alone (e.g. SKG–BWN DN 1, 2021) is not track of this line
           var u = null; for (var i = 0; i < segs.length; i++) { var s = segs[i]; if (s.lid === L.lid && PE.P(s.a[0], s.a[1]) <= pos && pos < PE.P(s.b[0], s.b[1])) { u = s; break; } }
           var c = { key: L.lid + '|' + km + '|' + ci, lid: L.lid, km: km, ci: ci, rs: a[2], cg: a[5], lt: a[7], ds: a[9], tgi: tg[km] || null, unit: u ? u.unit : '', aen: u ? u.aen : '', srden: u ? u.srden : '' };
           cells.push(c); byKey[c.key] = c; (byLid[L.lid] = byLid[L.lid] || []).push(c); var bk = byKm[L.lid] = byKm[L.lid] || {}; (bk[km] = bk[km] || []).push(c);
@@ -1220,14 +1353,22 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   var R = PE.addWatchRule;
 
   // B1 – not recorded: no TRC run over the 200 m within settings.watch.trcDays (OMS later)
-  R({ id: 'B1', group: 'B', views: ['main', 'all'], en: 'Not recorded', hi: 'रिकॉर्डिंग नहीं हुई', rule: 'No TRC run over the 200 m within the schedule (OMS added when its run list is loaded)', needs: ['trcRuns', 'health'], later: ['omsRuns'], thresholds: ['trcDays'], unitText: 'stretches',
+  // [C] TRC interval by sanctioned sectional speed (TMS Control units, else TMS's run list): >130 km/h 2 months, >110–130 3, >100–110 4,
+  // up to 100 6 months (settings.watch.trcBySpeed); "due" within the grace (settings.watch.trcGraceDays, 1 month), "overdue" beyond it.
+  PE.trcInterval = function (W, sp) { if (sp == null || !(+sp > 0)) return null; var T = W.trcBySpeed || [{ above: 130, days: 61 }, { above: 110, days: 91 }, { above: 100, days: 122 }, { above: 0, days: 183 }]; for (var i = 0; i < T.length; i++) if (+sp > T[i].above) return T[i].days; return T[T.length - 1].days; };
+  R({ id: 'B1', group: 'B', views: ['main', 'all'], en: 'Not recorded by TRC in time', hi: 'TRC रिकॉर्डिंग समय पर नहीं', rule: 'No TRC (track recording car) run over the 200 m within the interval for the line\'s sectional speed: above 130 km/h 2 months, above 110 3, above 100 4, up to 100 6 months; overdue = more than 1 month past the interval', needs: ['trcRuns', 'health'], later: ['omsRuns'], thresholds: ['trcBySpeed', 'trcGraceDays'], unitText: 'stretches of 200 m',
     run: function (X) {
-      var W = X.W, today = X.today; var last = {}, all = {};
+      var W = X.W, today = X.today; var last = {}, all = {}; var g = W.trcGraceDays != null ? W.trcGraceDays : 30;
       X.trc.forEach(function (r) { PE.cellsOf(X.C, r.lid, r.km, r.m, r.km2, r.m2).forEach(function (c) { (all[c.key] = all[c.key] || []).push(r.d); if (!last[c.key] || r.d > last[c.key]) last[c.key] = r.d; }); });
       X.cellLastTrc = last;
-      var bad = X.C.list.filter(function (c) { return !last[c.key] || PE.daysBetween(last[c.key], today) > W.trcDays; });
-      var monthly = lastMonths(today, 12).map(function (ym) { var e = monthEnd(ym); if (e > today) e = today; return [ym, X.C.list.filter(function (c) { var ds = (all[c.key] || []).filter(function (d) { return d <= e; }); var l = ds.sort().pop(); return !l || PE.daysBetween(l, e) > W.trcDays; }).length]; });
-      return { cells: bad, records: stretches(bad).map(function (s) { var c = X.C.byKey[s.lid + '|' + s.km + '|' + (s.m / 200)]; var l = c && last[c.key]; s.text = l ? 'last TRC run ' + l + ' (' + PE.daysBetween(l, today) + ' days)' : 'no TRC run in TMS\'s list (from Mar-2023)'; return s; }), monthly: monthly, dataOf: ['tms'] };
+      var spd = X.speedOf || {}; var iv = function (c) { return PE.trcInterval(W, spd[c.lid]); };
+      var known = X.C.list.filter(function (c) { return iv(c) != null; }); X.speedUnknown = X.C.list.filter(function (c) { return iv(c) == null; });
+      var state = function (c, d) { var l = last[c.key], I = iv(c); if (!l || l > d) return 'overdue'; var a = PE.daysBetween(l, d); return a <= I ? 'in time' : a <= I + g ? 'due' : 'overdue'; };
+      X.trcState = function (c) { return iv(c) == null ? 'speed unknown' : state(c, today); };
+      var bad = known.filter(function (c) { return state(c, today) === 'overdue'; }), due = known.filter(function (c) { return state(c, today) === 'due'; });
+      var monthly = lastMonths(today, 12).map(function (ym) { var e = monthEnd(ym); if (e > today) e = today; return [ym, known.filter(function (c) { var ds = (all[c.key] || []).filter(function (d) { return d <= e; }); var l = ds.sort().pop(); var I = iv(c); return !l || PE.daysBetween(l, e) > I + g; }).length]; });
+      return { cells: bad, records: stretches(bad).map(function (s) { var c = X.C.byKey[s.lid + '|' + s.km + '|' + (s.m / 200)]; var l = c && last[c.key]; var I = c && iv(c); s.text = (l ? 'last TRC run ' + PE.ist(l) + ' – ' + PE.daysBetween(l, today) + ' days ago' : 'no TRC run in TMS\'s run list since Mar-2023') + '; interval ' + Math.round(I / 30.4) + ' months for ' + spd[s.lid] + ' km/h'; return s; }),
+        monthly: monthly, extra: { due: due.length, dueKm: Math.round(due.length * 0.2), speedUnknown: X.speedUnknown.length }, note: due.length + ' more stretches due within the 1-month grace', dataOf: ['tms'] };
     } });
   // B2 – not inspected
   R({ id: 'B2', group: 'B', en: 'Not inspected', hi: 'निरीक्षण नहीं हुआ', rule: 'No trolley / foot / footplate inspection over the stretch in time', needs: ['inspections'], thresholds: [], unitText: 'stretches' });
@@ -1251,7 +1392,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   R({ id: 'B5', group: 'B', en: 'In TMS, no proof', hi: 'TMS में, प्रमाण नहीं', rule: 'TMS work site with no Field Mini Control proof, or proof without certificates / photos', needs: ['fmc', 'workSite'], thresholds: [], unitText: 'work sites',
     run: function (X) {
       var L = X.pk.filter(function (p) { return p.outcome === 'tms only' || (p.outcome === 'matched' && PE.proofMissing(p.fmc).length); });
-      return { records: L.map(function (p) { return { lid: p.lid, km: p.km, m: p.m, unit: p.u, d: p.date, lt: ltOfPk(p), ls: lsOfPk(p), text: (p.type || '') + (p.outcome === 'tms only' ? ' – no sheet proof' : ' – missing ' + PE.proofMissing(p.fmc).join(', ')), go: { view: 'reg', arg: p.outcome } }; }), count: L.length, unitOf: function (r) { return r.unit; },
+      return { records: L.map(function (p) { return { lid: p.lid, km: p.km, m: p.m, unit: p.u, d: p.date, lt: ltOfPk(p), ls: lsOfPk(p), text: (p.type || '') + (p.outcome === 'tms only' ? ' – no sheet proof' : ' – missing ' + PE.proofMissing(p.fmc).map(PE.proofName).join(', ')), go: { view: 'reg', arg: p.outcome } }; }), count: L.length, unitOf: function (r) { return r.unit; },
         monthly: lastMonths(X.today, 12).map(function (ym) { return [ym, X.fmcCovered[ym] ? L.filter(function (p) { return monthOf(p.date) === ym; }).length : null]; }), dataOf: ['fmc', 'tms'] };
     } });
   // B6 – bad but untouched
@@ -1265,27 +1406,32 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       return { cells: bad, records: stretches(bad).map(function (s) { var c = X.C.byKey[s.lid + '|' + s.km + '|' + (s.m / 200)]; s.text = 'TMS TGI ' + (c && c.tgi ? c.tgi[0][0] + ' (run ' + (c.tgi[0][1] || '?') + ')' : '?') + ' – no card, no work, no plan in ' + W.b6Months + ' months'; return s; }), snapshot: true, dataOf: ['tms'] };
     } });
   // B7 – data missing
-  R({ id: 'B7', group: 'B', en: 'Data missing', hi: 'डेटा उपलब्ध नहीं', rule: 'Linear data missing in TMS; ballast register: clean cushion 0 / blank, clean > total, clean = total = 50 (cm?), low cushion without screening date; line type unknown; Field Mini Control "not filled" days', needs: ['condition'], later: ['ballastCushion'], thresholds: [], unitText: 'items',
+  // [C] B7 = missing in TMS (the unit fixes it in TMS / the sheet); B8 = not placed by the portal (admin: settings, mast list, speed …)
+  R({ id: 'B7', group: 'B', en: 'Missing in TMS', hi: 'TMS में अनुपलब्ध', rule: 'Data TMS should hold but does not: linear data missing; ballast register clean cushion 0 / blank, clean more than total, clean = total = 50 (possibly cm), low cushion without screening date; Field Mini Control days not filled', needs: ['condition'], later: ['ballastCushion'], thresholds: [], unitText: 'items',
     run: function (X) {
-      var miss = {}, why = {}; X.cond.filter(function (c) { return c.k === 'missing'; }).forEach(function (c) { PE.cellsOf(X.C, c.lid, c.km, c.m, c.km2, c.m2).forEach(function (x) { miss[x.key] = x; why[x.key] = 'TMS: linear data missing'; }); });
-      // ballast register data quality ([PB] B1a / B2): 0 or blank = data missing, never "deep screening needed"
+      var miss = {}, why = {}; X.cond.filter(function (c) { return c.k === 'missing'; }).forEach(function (c) { PE.cellsOf(X.C, c.lid, c.km, c.m, c.km2, c.m2).forEach(function (x) { miss[x.key] = x; why[x.key] = 'TMS: linear data missing (' + (c.f || 'feature') + ')'; }); });
       var other = [];
       var place = function (b) { return b.lid ? null : b.stn + ' yard, ' + (b.yl || 'line ?') + ' ' + PE.fmtKm(b.km, b.m) + '–' + PE.fmtKm(b.km2, b.m2); };
-      var add = function (b, txt) { other.push({ lid: b.lid, km: b.lid ? b.km : null, m: b.m, km2: b.lid ? b.km2 : null, m2: b.m2, where: place(b), unit: b.unit || '', lt: b.ltp, ls: b.ltsub, len: b.len, q: txt, text: (place(b) ? place(b) + ': ' : '') + txt + ' – TMS ballast register' }); };
+      var add = function (b, cause, txt) { other.push({ lid: b.lid, km: b.lid ? b.km : null, m: b.m, km2: b.lid ? b.km2 : null, m2: b.m2, where: place(b), unit: b.unit || '', lt: b.ltp, ls: b.ltsub, len: b.len, q: cause, text: (place(b) ? place(b) + ': ' : '') + txt + ' – TMS ballast register' }); };
       X.ballast.forEach(function (b) {
-        if (!(b.cc > 0)) add(b, 'clean cushion ' + (b.cc === 0 ? '0' : 'blank') + (b.scr ? ' (screened ' + b.scr + ')' : ''));
-        else if (b.tc > 0 && b.cc > b.tc) add(b, 'clean cushion ' + b.cc + ' mm more than total ' + b.tc + ' mm');
-        else if (b.cc === 50 && b.tc === 50) add(b, 'clean = total = 50 – possibly entered in cm, left out of deep screening until checked');
-        else if (b.low && !b.scr) add(b, 'clean cushion ' + b.cc + ' mm, screening date missing in TMS');
+        if (!(b.cc > 0)) add(b, 'Ballast register: clean cushion ' + (b.cc === 0 ? '0' : 'blank'), 'clean cushion ' + (b.cc === 0 ? '0' : 'not entered in TMS') + (b.scr ? ' (screened ' + b.scr + ')' : ''));
+        else if (b.tc > 0 && b.cc > b.tc) add(b, 'Ballast register: clean more than total', 'clean cushion ' + b.cc + ' mm more than total ' + b.tc + ' mm');
+        else if (b.cc === 50 && b.tc === 50) add(b, 'Ballast register: clean = total = 50 (cm?)', 'clean = total = 50 – possibly entered in cm, left out of deep screening until checked');
+        else if (b.low && !b.scr) add(b, 'Ballast register: screening date not entered', 'clean cushion ' + b.cc + ' mm, screening date not entered in TMS');
       });
-      // line type unknown (never put in Main or Loop)
-      (X.unknown || []).forEach(function (u) { other.push({ lid: u.lid || null, km: u.km, m: u.m, where: u.where || null, unit: u.unit || '', lt: null, q: 'line type unknown', text: 'line type unknown – ' + u.kind + ': ' + u.why }); });
-      // Field Mini Control: unit did not fill the sheet that day (nil reports are not a problem)
-      (X.days || []).filter(function (d) { return d.status === 'not filled'; }).forEach(function (d) { other.push({ unit: d.u, lt: null, d: d.date, q: 'sheet not filled', text: d.u + ' – ' + d.tab + ' ' + d.date + ': not filled (all cells blank)' }); });
+      (X.days || []).filter(function (d) { return d.status === 'not filled'; }).forEach(function (d) { other.push({ unit: d.u, lt: null, d: d.date, q: 'Field Mini Control: day not filled', text: d.u + ' – ' + d.tab + ' ' + PE.ist(d.date) + ': not filled (all cells blank in the sheet)' }); });
       var cells = Object.keys(miss).map(function (k) { return miss[k]; });
-      var recs = stretches(cells).map(function (s) { s.text = why[s.lid + '|' + s.km + '|' + (s.m / 200)] || 'data missing'; s.lt = 'main'; return s; }).concat(other);
-      var q = {}; other.forEach(function (o) { q[o.q] = (q[o.q] || 0) + 1; });
-      return { records: recs, count: cells.length + other.length, unitItems: cells.concat(other), extra: { notPlaced: X.notPlaced, byKind: q, linearCells: cells.length }, note: Object.keys(q).map(function (k) { return q[k] + ' ' + k; }).join(' · '), snapshot: true, dataOf: ['tms', 'fmc'] };
+      var recs = stretches(cells).map(function (s) { s.text = why[s.lid + '|' + s.km + '|' + (s.m / 200)] || 'missing in TMS'; s.q = 'TMS: linear data missing'; s.lt = 'main'; return s; }).concat(other);
+      var q = {}; if (cells.length) q['TMS: linear data missing (200 m stretches)'] = cells.length; other.forEach(function (o) { q[o.q] = (q[o.q] || 0) + 1; });
+      return { records: recs, count: cells.length + other.length, unitItems: cells.concat(other), causes: q, snapshot: true, dataOf: ['tms', 'fmc'] };
+    } });
+  R({ id: 'B8', group: 'B', en: 'Not placed by the portal', hi: 'पोर्टल द्वारा स्थान तय नहीं', rule: 'Records the portal could not place or classify: line name not typed (Settings → line types), sectional speed unknown, sheet record without a recognisable place or mast, mast not in the TMS mast list', needs: [], thresholds: [], unitText: 'items',
+    run: function (X) {
+      var out = [], q = {}; var add = function (cause, r) { q[cause] = (q[cause] || 0) + 1; if (out.length < 3000) out.push(Object.assign({ q: cause }, r)); };
+      (X.unknown || []).forEach(function (u) { add('Line type unknown (' + u.kind + ')', { lid: u.lid || null, km: u.km, m: u.m, where: u.where || null, unit: u.unit || '', lt: null, text: u.why }); });
+      if (X.speedUnknown && X.speedUnknown.length) stretches(X.speedUnknown).forEach(function (s) { add('Sectional speed unknown – TRC interval cannot be set', Object.assign(s, { lt: 'main', text: 'no sanctioned sectional speed for ' + s.lid + ' in TMS Control or TMS – B1 not judged here' })); });
+      (X.unplaced || []).forEach(function (r) { add(r.cause, r); });
+      return { records: out, count: Object.keys(q).reduce(function (a, k) { return a + q[k]; }, 0), causes: q, snapshot: true, dataOf: ['tms', 'fmc'] };
     } });
   // H1 – repeat, never fixed
   R({ id: 'H1', group: 'H', en: 'Repeat, never fixed', hi: 'बार-बार, कभी ठीक नहीं', rule: 'Same 200 m gets cards again and again in 12 months, each one closed', needs: ['spotCards'], thresholds: ['repeatCards', 'repeatMonths'], src: ['Spot cards', 'TMS work', 'Machine days', 'Field sheet'],
@@ -1411,10 +1557,14 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     var vote = {}; (D.voteCards || cards).concat(D.voteWs || D.ws || []).forEach(function (r) { if (!r.u || !r.lid || r.km == null) return; var k = r.lid + '|' + r.km; var o = vote[k] = vote[k] || {}; o[r.u] = (o[r.u] || 0) + 1; });
     var aenOf = {}; (D.voteWs || D.ws || []).forEach(function (w) { if (w.u && w.aen) aenOf[w.u] = PE.desig(w.aen) || w.aen; }); (D.units || []).forEach(function (u) { if (u.unit && u.aen) aenOf[u.unit] = u.aen; });
     C.list.forEach(function (c) { if (c.unit) return; var o = vote[c.lid + '|' + c.km]; if (!o) { for (var d = 1; d <= 3 && !o; d++) o = vote[c.lid + '|' + (c.km - d)] || vote[c.lid + '|' + (c.km + d)]; } if (!o) return; c.unit = Object.keys(o).sort(function (a, b) { return o[b] - o[a]; })[0]; c.aen = aenOf[c.unit] || ''; c.unitBy = 'tms'; });
+    // [C] sanctioned sectional speed per section-line: TMS Control units first, else TMS's TRC run list
+    var speedOf = {}; (D.units || []).forEach(function (u) { if (u.lid && +u.speed > 0) speedOf[u.lid] = Math.max(speedOf[u.lid] || 0, +u.speed); });
+    var spT = {}; (D.voteTrc || D.trc || []).forEach(function (r) { if (r.lid && +r.sp > 0 && (!spT[r.lid] || r.d > spT[r.lid].d)) spT[r.lid] = { d: r.d, sp: +r.sp }; }); Object.keys(spT).forEach(function (l) { if (!speedOf[l]) speedOf[l] = spT[l].sp; });
     var Cu = C; if (D.view === 'loop') C = { list: [], byKey: {}, byLid: {} };   // [PB] B2: no 200 m chart stretches on loop lines; the main cells still give the units
     var pk = PE.buildPackages(D.fmc || [], D.ws || [], { ac: D.acRecent || [], mp: D.mpRecent || [], fw: D.feedWork || [], sc: [] }, { S: S, N: D.N, coverage: D.fmcCoverage || {} });
     var fmcCovered = {}; Object.keys(D.fmcCoverage || {}).forEach(function (d) { fmcCovered[monthOf(d)] = 1; });
-    var X = { view: D.view || 'all', Cu: Cu, unknown: D.unknown || [], days: D.days || [], tamping: D.tamping || [], S: S, W: W, today: today, C: C, has: has, trc: D.trc || [], cards: cards, detailShare: cards.length ? withDet / cards.length : 0, work: work, pk: pk, jobs: D.jobs || [], cond: D.cond || [], ballast: [], fmcCovered: fmcCovered, notPlaced: D.notPlaced || {}, results: {} };
+    var unplaced = []; (D.fmc || []).forEach(function (r) { var w = r.where || {}; if (w.lid) return; var m = (r.masts || []).length; unplaced.push({ cause: m ? (w.how === 'mast' ? 'Sheet: mast not in the TMS mast list' : 'Sheet: mast given – TMS mast list not loaded') : 'Sheet: place not recognised', unit: r.u, d: r.date, lt: r.ltp, where: (r.bs || '') + ' ' + (r.line || ''), text: r.tab + ' ' + PE.ist(r.date) + ' – ' + (r.bs || 'no place') + ' ' + (r.line || '') + ': ' + (w.note || 'not placed') }); });
+    var X = { unplaced: unplaced, speedOf: speedOf, view: D.view || 'all', Cu: Cu, unknown: D.unknown || [], days: D.days || [], tamping: D.tamping || [], S: S, W: W, today: today, C: C, has: has, trc: D.trc || [], cards: cards, detailShare: cards.length ? withDet / cards.length : 0, work: work, pk: pk, jobs: D.jobs || [], cond: D.cond || [], ballast: [], fmcCovered: fmcCovered, notPlaced: D.notPlaced || {}, results: {} };
     // [PB] B1a: ballast register stretches with their unit (running line: the unit of the first 200 m; station yard: the station's unit given by the page)
     var BT = (S.rules && S.rules.byLineType) || {};
     X.ballast = (D.ballast || []).map(function (b) {
@@ -1438,14 +1588,14 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
           recs.forEach(function (x) { if (x.lt === undefined) x.lt = x.lid ? PE.lineTypeOfLid(x.lid, D.N).t : null; });
           e.special = {}; recs.forEach(function (x) { if (x.ls) e.special[x.ls] = (e.special[x.ls] || 0) + 1; });   // [PB] B2a: "incl. N avoiding / fly-over"
           e.records = recs.slice(0, W.maxRecords || 400); e.more = Math.max(0, recs.length - e.records.length);
-          e.monthly = res.monthly || null; e.snapshot = !!res.snapshot; e.note = res.note || ''; e.extra = res.extra || null; e.dataOf = res.dataOf || ['tms'];
+          e.causes = res.causes || null; e.monthly = res.monthly || null; e.snapshot = !!res.snapshot; e.note = res.note || ''; e.extra = res.extra || null; e.dataOf = res.dataOf || ['tms'];
         } catch (err) { e.status = 'error'; e.error = String(err && err.message || err); }
       }
       out.rules.push(e);
     });
     // ---------- per-unit watch score: share of the unit's 200 m stretches / works where each AVAILABLE check is in time
     var lastTrc = X.cellLastTrc || {};
-    var units = {}; C.list.forEach(function (c) { var u = c.unit || '?'; var o = units[u] = units[u] || { unit: u, aen: c.aen || aenOf[u] || '', srden: c.srden, cells: 0, trcOk: 0 }; o.cells++; if (lastTrc[c.key] && PE.daysBetween(lastTrc[c.key], today) <= W.trcDays) o.trcOk++; });
+    var units = {}; C.list.forEach(function (c) { var u = c.unit || '?'; var o = units[u] = units[u] || { unit: u, aen: c.aen || aenOf[u] || '', srden: c.srden, cells: 0, trcOk: 0 }; o.cells++; if (X.trcState && X.trcState(c) === 'in time') o.trcOk++; });
     pk.forEach(function (p) { var u = p.u || '?'; var o = units[u] = units[u] || { unit: u, aen: aenOf[u] || '', cells: 0, trcOk: 0 }; if (p.outcome === 'not checked') return; if (p.fmc || p.outcome === 'tms only') { o.proofN = (o.proofN || 0) + 1; if (p.fmc && !PE.proofMissing(p.fmc).length) o.proofOk = (o.proofOk || 0) + 1; } if (p.fmc) { o.entryN = (o.entryN || 0) + 1; if (p.outcome === 'matched') o.entryOk = (o.entryOk || 0) + 1; } });
     var week = isoWeek(today); var prevW = (D.prev && D.prev.weekly) || {};
     Object.keys(units).forEach(function (u) {
@@ -1465,7 +1615,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     out.rules.forEach(function (e) { if (e.status !== 'ready' || !e.snapshot) return; var m = monthOf(today); (out.snapshots[e.id] = out.snapshots[e.id] || {})[m] = e.count; e.monthly = lastMonths(today, 12).map(function (ym) { var v = out.snapshots[e.id][ym]; return [ym, v == null ? null : v]; }); });
     // ---------- coverage: track seen fully in time / partly / blind (with the checks available)
     var seen = 0, partly = 0, blind = 0; var b6 = {}; ((X.results.B6 || {}).cells || []).forEach(function (c) { b6[c.key] = 1; });
-    C.list.forEach(function (c) { var t = lastTrc[c.key] && PE.daysBetween(lastTrc[c.key], today) <= W.trcDays; if (t && !b6[c.key]) seen++; else if (t || lastTrc[c.key]) partly++; else blind++; });
+    C.list.forEach(function (c) { var st = X.trcState ? X.trcState(c) : 'overdue'; if (st === 'speed unknown') return; var t = st === 'in time'; if (t && !b6[c.key]) seen++; else if (t || st === 'due') partly++; else blind++; });
     out.coverage = { seen: seen, partly: partly, blind: blind, km: { seen: Math.round(seen * 0.2), partly: Math.round(partly * 0.2), blind: Math.round(blind * 0.2) }, basis: 'TRC run in time (and not "bad but untouched"); inspections and OMS added when loaded' };
     // ---------- who is watching each line
     var lineRows = {};
@@ -1512,10 +1662,16 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     var views = {};
     ['main', 'loop', 'all'].forEach(function (v) {
       var Dv = Object.assign({}, D, { view: v, trc: f(D.trc, v), cards: f(D.cards, v), ws: f(D.ws, v), acRecent: f(D.acRecent, v), mpRecent: f(D.mpRecent, v), fmc: f(D.fmc, v), feedWork: f(D.feedWork, v), jobs: f(D.jobs, v), cond: f(D.cond, v), itms: f(D.itms, v), ballast: f(D.ballast, v), tamping: f(D.tamping, v),
-        unknown: unknown, voteCards: (D.cards || []).filter(function (c) { return c.lid && c.km != null; }), voteWs: D.ws || [], prev: D.prev && D.prev.views ? D.prev.views[v] : (v === 'main' ? D.prev : null) });
+        unknown: unknown, voteTrc: D.trc, voteCards: (D.cards || []).filter(function (c) { return c.lid && c.km != null; }), voteWs: D.ws || [], prev: D.prev && D.prev.views ? D.prev.views[v] : (v === 'main' ? D.prev : null) });
       views[v] = PE.computeView(Dv); views[v].view = v;
     });
     var out = Object.assign({}, views.main); out.v = 2; out.views = views; out.lineTypes = counts; out.unknownSample = unknown.slice(0, 50);
+    // [C] OHE mast placement: rows that name a mast (or a mast range in TMS mast format) and how many of them the TMS mast list placed exactly
+    var mc = function (list, get) { var o = { refs: 0, placed: 0 }; (list || []).forEach(function (r) { var g = get(r); if (!g.refs) return; o.refs++; if (g.placed) o.placed++; }); return o; };
+    out.mastPlace = { loaded: PE.mastsLoaded ? PE.mastsLoaded() : false,
+      machineProg: mc(D.mpRecent, function (r) { return { refs: (r.masts || []).length + (r.mastRanges || []).length, placed: r.how === 'mast' && r.lid && !r.approx }; }),
+      fmc: mc(D.fmc, function (r) { var w = r.where || {}; return { refs: (r.masts || []).length + ((w.masts || []).length) + ((w.mastRanges || []).length), placed: w.how === 'mast' && w.lid && !w.approx }; }) };
+    out.erhRows = (D.mpRecent || []).filter(function (r) { return r.erh != null; }).length;
     out.unknownNames = Object.keys(names).map(function (k) { return names[k]; }).sort(function (a, b) { return b.n - a.n; }).slice(0, 600);
     return out;
   };

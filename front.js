@@ -95,10 +95,10 @@ function ring(pct) {
   const r = 66, c = 2 * Math.PI * r, v = pct == null ? 0 : Math.max(0, Math.min(100, pct));
   return `<svg viewBox="0 0 160 160" class="fx-ring" role="img" aria-label="watch score ${pct == null ? 'not known' : pct}"><circle cx="80" cy="80" r="${r}" fill="none" stroke="rgba(255,255,255,.18)" stroke-width="14"/><circle cx="80" cy="80" r="${r}" fill="none" stroke="#F29A2E" stroke-width="14" stroke-linecap="round" stroke-dasharray="${(c * v / 100).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 80 80)"/><text x="80" y="90" text-anchor="middle" class="fx-ringv">${pct == null ? '—' : pct}</text></svg>`;
 }
-const kmTxt = r => r.lid ? `${esc(r.lid)} · ${PE.fmtKm(r.km, r.m)}${r.km2 != null && (r.km2 !== r.km || r.m2 !== r.m) ? '–' + PE.fmtKm(r.km2, r.m2) : ''}${r.approx ? ' <span class="fx-chip">approx</span>' : ''}` : '';
+const kmTxt = r => r.lid ? `${esc(r.lid)} · ${PE.fmtKm(r.km, r.m)}${r.km2 != null && (r.km2 !== r.km || r.m2 !== r.m) ? '–' + PE.fmtKm(r.km2, r.m2) : ''}${r.approx ? ' <span class="fx-chip">block section / station only – exact 200 m not known</span>' : ''}` : '';
 function dataLine(W) {
   const now = new Date().toISOString(); const src = [['tms', 'TMS data', 'टीएमएस डेटा'], ['fmc', 'Field sheet', 'फ़ील्ड शीट'], ['feed', 'TMS Control', 'टीएमएस कंट्रोल']];
-  return `<div class="fx-data">${src.map(([k, en, hi]) => { const d = (W.dataAt || {})[k]; const st = PE.staleDate(W, k, now); return `<span class="${st ? 'fx-stale' : ''}">${esc(HI() ? hi : en)} <b>${d ? esc(PE.ist(d)) : '—'}</b>${st ? ' · ' + (HI() ? 'पुराना' : 'old') : ''}</span>`; }).join('')}<span>${HI() ? 'गणना' : 'computed'} <b>${esc(PE.ist(W.computedAt))}</b></span></div>`;
+  return `<div class="fx-data">${src.map(([k, en, hi]) => { const d = (W.dataAt || {})[k]; const st = PE.staleDate(W, k, now); return `<span class="${st ? 'fx-stale' : ''}">${esc(HI() ? hi : en)} <b>${d ? esc(PE.ist(d)) : (HI() ? 'अभी लोड नहीं' : 'not loaded yet')}</b>${st ? ' · ' + (HI() ? 'पुराना' : 'old') : ''}</span>`; }).join('')}<span>${HI() ? 'गणना' : 'computed'} <b>${esc(PE.ist(W.computedAt))}</b></span></div>`;
 }
 function langBtn() { return `<button class="fx-lang" data-fxlang="${HI() ? 'en' : 'hi'}" aria-label="language">${HI() ? 'EN' : 'हिं'}</button>`; }
 function head(title, hi, right) {
@@ -169,6 +169,11 @@ VIEWS.ov = async (el) => {
   const lab = ltLab(LT);
   const tile = r => {
     const n = PE.ruleCount(r, sc.kind === 'division' ? null : U);
+    const cz = (r.id === 'B7' || r.id === 'B8') && r.status === 'ready' ? topCauses(r, sc.kind === 'division', inU) : null;   // [C] count + top 3 causes + "See all"
+    if (cz) return `<div class="fx-tile ${n ? 'hot' : 'calm'}" data-go="miss" data-arg="${esc(r.id)}" role="button" tabindex="0"><div class="fx-th"><span class="fx-code">${esc(r.id)}</span><span class="fx-tt">${two(r.en, r.hi)}</span></div>
+      <div class="fx-big">${n}<small> ${esc(r.unitText || 'items')}${esc(lab)}</small></div>
+      ${cz.length ? `<ul class="fx-causes">${cz.slice(0, 3).map(([k, c]) => `<li><span>${esc(k)}</span><b>${c}</b></li>`).join('')}</ul>` : `<div class="fx-muted">${HI() ? 'कुछ नहीं' : 'Nothing in this scope'}</div>`}
+      <div class="fx-rule"><span class="fx-link">${HI() ? 'सभी देखें' : 'See all'} →</span></div></div>`;
     return `<div class="fx-tile ${r.status !== 'ready' ? 'wait' : n ? 'hot' : 'calm'}" ${r.status === 'ready' ? `data-rule="${esc(r.id)}" role="button" tabindex="0"` : ''}><div class="fx-th"><span class="fx-code">${esc(r.id)}</span><span class="fx-tt">${two(r.en, r.hi)}</span></div>
       ${r.status === 'ready' ? `<div class="fx-big">${n}<small> ${esc(r.unitText || 'records')}${esc(lab)}</small></div>${r.km != null && sc.kind === 'division' ? `<div class="fx-muted">≈ ${r.km} km</div>` : ''}${spark(r.monthly, n ? 'hot' : '')}` : `<div class="fx-waitt">${HI() ? 'डेटा की प्रतीक्षा' : 'waiting for data'}: ${esc(r.missing.map(kindTxt).join(', '))}</div>`}
       <div class="fx-rule">${esc(r.rule)}${r.note ? ` <i>(${esc(r.note)})</i>` : ''}</div></div>`;
@@ -241,9 +246,27 @@ VIEWS.ov = async (el) => {
   el.querySelector('[data-sk="division"]').onclick = () => { SC.kind = 'division'; SC.value = ''; H.render(); };
   el.querySelectorAll('select[data-sk]').forEach(s => s.onchange = () => { if (!s.value) return; SC.kind = s.dataset.sk; SC.value = s.value; H.render(); });
   $('fxGo').onclick = () => { const km = parseFloat($('fxKm').value); if (isNaN(km)) { toast(HI() ? 'किमी लिखें' : 'Type the km', true); return; } document.body.classList.remove('front'); go('loc', `${$('fxLid').value}|${Math.floor(km)}|${Math.round((km % 1) * 1000)}`); };
-  $('fxWhere').onclick = () => toast(HI() ? '"मैं कहाँ हूँ" के लिए OHE मास्ट / किमी सूची चाहिए – अभी लाइन और किमी चुनें.' : '"Where am I" needs the OHE mast / km list (not loaded yet) – pick the line and km for now.');
+  $('fxWhere').onclick = () => whereAmI();
 };
 
+// [C] "Where am I": phone GPS -> nearest RDPS survey point within settings.rdps.nearM (300 m); several lines -> the user picks one
+async function whereAmI() {
+  if (!navigator.geolocation) { toast(HI() ? 'इस डिवाइस पर GPS नहीं' : 'This device gives no location – search by km or station.', true); return; }
+  toast(HI() ? 'स्थान ढूँढ रहे हैं…' : 'Finding your position…');
+  navigator.geolocation.getCurrentPosition(async pos => {
+    let pts = []; try { const fl = await files([{ kind: 'rdps', group: '_all' }]); pts = snap(fl, 'rdps', '_all') || []; } catch (e) { }
+    if (!pts.length) { toast(HI() ? 'RDPS सर्वे लोड नहीं – किमी / स्टेशन से खोजें' : 'RDPS survey not loaded yet – search by km or station.', true); return; }
+    const la = pos.coords.latitude, lo = pos.coords.longitude, R = 6371000, rad = Math.PI / 180, near = (H.settings().rdps || {}).nearM || 300;
+    const d = p => { const x = (p[4] - lo) * rad * Math.cos((la + p[3]) / 2 * rad), y = (p[3] - la) * rad; return Math.sqrt(x * x + y * y) * R; };
+    const best = {}; pts.forEach(p => { if (!p[0]) return; const dd = d(p); if (dd <= near && (!best[p[0]] || dd < best[p[0]].d)) best[p[0]] = { d: dd, p }; });
+    const L = Object.entries(best).sort((a, b) => a[1].d - b[1].d);
+    if (!L.length) { H.modal(`<h3 style="margin:0 0 6px">${HI() ? 'पास में कोई सर्वे बिंदु नहीं' : 'No surveyed line within ' + near + ' m'}</h3><p>${HI() ? 'इस लाइन का RDPS डेटा नहीं है या आप ट्रैक से दूर हैं। किमी, स्टेशन या मास्ट से खोजें।' : 'Either this line has no RDPS survey data or you are away from the track. Search by km, station or mast on the Location card.'}</p>`); return; }
+    const go1 = ([lid, x]) => { H.closeModal(); document.body.classList.remove('front'); go('loc', `${lid}|${x.p[1]}|${Math.round(x.p[2])}`); };
+    if (L.length === 1) { go1(L[0]); return; }
+    H.modal(`<h3 style="margin:0 0 6px">${HI() ? 'कौन सी लाइन?' : 'Which line are you on?'}</h3><p class="small muted">${HI() ? 'GPS से पास की लाइनें अलग नहीं हो पातीं' : 'GPS (±5–10 m) cannot tell adjacent lines apart.'}</p><div class="moresheet">${L.map(([lid, x], i) => `<button data-wi="${i}">${esc(lid)} · km ${x.p[1]}/${Math.round(x.p[2])} · ${Math.round(x.d)} m away</button>`).join('')}</div>`);
+    document.querySelectorAll('#modalBody [data-wi]').forEach(b => b.onclick = () => go1(L[+b.dataset.wi]));
+  }, () => toast(HI() ? 'स्थान नहीं मिला (अनुमति?)' : 'Position not available (permission?) – search by km or station.', true), { enableHighAccuracy: true, timeout: 20000 });
+}
 // ---------------------------------------------------------------- THREE THINGS (design 8)
 VIEWS.home = async (el) => {
   const W0 = await load(el, 'home'); if (!W0) return;
@@ -280,6 +303,79 @@ function unknownNames(W) {
   <h3 style="margin:18px 0 6px">Line names not typed yet (${L.length})</h3><p class="small muted">Assign them in Settings → Advanced JSON → <code>lineType</code>: add the name (or a pattern) to <code>loop</code>, <code>siding</code> or <code>mainNamed</code>. The watch is computed again by itself.</p>
   ${L.length ? `<div class="scroll" style="max-height:420px"><table class="t compact" id="ltUnknown"><thead><tr><th>Line name</th><th>Station / section</th><th>Data</th><th>Count</th><th>Why</th></tr></thead><tbody>${L.map(x => `<tr><td><code>${esc(x.name)}</code></td><td>${esc(x.station || '—')}</td><td class="small">${esc(kindTxt(x.kind))}</td><td>${x.n}</td><td class="small muted">${esc(x.why)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="muted">None.</div>'}`;
 }
+// ---------------------------------------------------------------- [C] causes of B7 / B8, and the grouped "See all" list
+/** [[cause, count]…] largest first – division: the complete stored counts; a unit / AEN: the listed records in scope */
+function topCauses(r, division, inU) {
+  if (division && r.causes) return Object.entries(r.causes).sort((a, b) => b[1] - a[1]);
+  const q = {}; (r.records || []).filter(inU).forEach(x => { const k = x.q || 'other'; q[k] = (q[k] || 0) + 1; }); return Object.entries(q).sort((a, b) => b[1] - a[1]);
+}
+const tagR = (t, sub) => `<span class="tag ${t === 'main' ? 't3' : t ? 't2' : 't1'}">${t ? PE.LT_TAG[t] + ' line' : 'line type unknown'}</span>${sub ? ` <span class="tag t3">${esc(sub)}</span>` : ''}`;
+const MISS_WHO = { B7: 'Data TMS (or the Field Mini Control sheet) should hold but does not. The SSE unit corrects it in TMS / the sheet; the portal shows it again after the next data load.', B8: 'Records the portal could not place or classify. The admin fixes these: line names in Settings → line types, the TMS OHE mast list (Load TMS data), sectional speed in TMS Control.' };
+const GOPEN = {};
+VIEWS.miss = async (el, arg) => {
+  document.body.classList.remove('front');
+  const id = arg === 'B8' ? 'B8' : 'B7';
+  el.innerHTML = H.pageHead(id === 'B7' ? 'Missing in TMS (B7)' : 'Not placed by the portal (B8)', 'Grouped by cause – every item with its place, unit and line type') + '<div id="miBox" class="muted">Loading…</div>';
+  const W0 = await watchGet(); if (!W0) { $('miBox').textContent = 'The blind-spot watch is not computed yet.'; return; }
+  const LT = LTV(); const W = PE.watchView(W0, LT); const sc = myScope(); const UA = Object.assign({}, W0.units || {}, W.units || {});
+  const U = PE.scopeUnits({ units: UA }, sc); const inU = x => sc.kind === 'division' || U.includes(x.unit || '?');
+  const r = (W.rules || []).find(x => x.id === id);
+  if (!r || r.status !== 'ready') { $('miBox').innerHTML = `<div class="panel body"><div class="inner">${esc(id)} is ${r ? 'waiting for: ' + esc((r.missing || []).map(kindTxt).join(', ')) : 'not computed for this line type'}.</div></div>`; return; }
+  const L = (r.records || []).filter(inU); const g = {}; L.forEach(x => { (g[x.q || 'other'] = g[x.q || 'other'] || []).push(x); });
+  const cz = topCauses(r, sc.kind === 'division', inU); const n = PE.ruleCount(r, sc.kind === 'division' ? null : U);
+  const place = x => x.lid ? `${esc(x.lid)} · ${PE.fmtKm(x.km, x.m)}${x.km2 != null && (x.km2 !== x.km || x.m2 !== x.m) ? '–' + PE.fmtKm(x.km2, x.m2) : ''}` : esc(x.where || x.stn || 'place not known');
+  const draw = () => {
+    $('miBox').outerHTML = `<div id="miBox"><div class="panel body"><div class="inner"><div class="small">${esc(MISS_WHO[id])}</div>
+      <div style="margin-top:6px"><b>${n} ${esc(r.unitText || 'items')}</b> · ${esc(scopeName(sc))}${esc(ltLab(LT))} · watch computed ${esc(PE.ist(W0.computedAt))}${r.causes && sc.kind !== 'division' ? ' · cause counts below are the items listed in this scope' : ''}</div>
+      <div style="margin-top:8px">${ltSwitch()}</div></div></div>
+      ${cz.map(([k, c]) => { const items = g[k] || []; const show = GOPEN[id + k] || 24; return `<section class="lgrp"><h3>${esc(k)} <span class="small muted">(${c}${items.length !== c ? ', ' + items.length + ' listed' : ''})</span></h3>
+        <div class="lcards">${items.slice(0, show).map(x => `<div class="lcard"><div class="lp">${place(x)}</div><div>${x.unit ? 'Unit ' + esc(x.unit) + ' · ' : ''}${tagR(x.lt, x.ls)}</div><div>${esc(x.text || x.title || '')}</div>${x.lid && x.km != null ? `<div><button class="btn ghost sm" data-pl="${esc(placeArg(x))}">Open the location card</button></div>` : ''}</div>`).join('') || '<div class="small muted">Counted, not listed (the stored list is capped at 3,000 items).</div>'}</div>
+        ${items.length > show ? `<button class="btn secondary sm" data-more="${esc(k)}" style="margin-top:8px">Show more (${items.length - show} more)</button>` : ''}</section>`; }).join('') || '<div class="panel body"><div class="inner">Nothing in this scope.</div></div>'}</div>`;
+    const box = $('miBox');
+    box.querySelectorAll('[data-pl]').forEach(b => b.onclick = () => go('loc', b.dataset.pl));
+    box.querySelectorAll('[data-more]').forEach(b => b.onclick = () => { const k = id + b.dataset.more; GOPEN[k] = (GOPEN[k] || 24) + 48; draw(); });
+    box.querySelectorAll('[data-lt]').forEach(b => b.onclick = () => setLTV(b.dataset.lt));
+  };
+  draw();
+};
+
+// ---------------------------------------------------------------- [C] ADMIN: Data health
+VIEWS.dh = async (el) => {
+  document.body.classList.remove('front');
+  el.innerHTML = H.pageHead('Data health', 'RDPS survey coverage, OHE masts, line names not typed yet, records not placed – what the admin can fix') + '<div id="dhBox" class="muted">Loading…</div>';
+  const b = H.S.boot || {}; const W = await watchGet();
+  let rd = [], om = [];
+  try { const fl = await files([{ kind: 'rdps', group: '_all' }, { kind: 'oheMast', group: '_all' }]); rd = snap(fl, 'rdps', '_all') || []; om = snap(fl, 'oheMast', '_all') || []; } catch (e) { }
+  const lastOf = k => (((b.loaded || {})[k]) || []).filter(x => x.complete && x.summary).pop();
+  const rdE = lastOf('rdps'), omE = lastOf('oheMast');
+  const cov = {}; ((rdE && rdE.summary.extra && rdE.summary.extra.coverage) || []).forEach(c => { cov[c.lid] = c; });
+  if (!Object.keys(cov).length) rd.forEach(p => { if (!p[0]) return; const P = PE.P(p[1], p[2]); const c = cov[p[0]] = cov[p[0]] || { lid: p[0], points: 0, masts: 0, a: P, b: P }; c.points++; if (p[5] === 'mast') c.masts++; c.a = Math.min(c.a, P); c.b = Math.max(c.b, P); });
+  const mtr = P => Math.floor(P / 10000) * 1000 + (P % 10000);
+  const lines = ((b.health || {}).lines || []).slice().sort((x, y) => x.lid.localeCompare(y.lid));
+  const covRows = lines.map(l => { const c = cov[l.lid]; const len = Math.max(1, mtr(l.b) - mtr(l.a)); const ov = c ? Math.max(0, Math.min(mtr(l.b), mtr(c.b)) - Math.max(mtr(l.a), mtr(c.a))) : 0; return { lid: l.lid, km: (len / 1000).toFixed(1), pct: c ? Math.min(100, Math.round(ov / len * 100)) : 0, pts: c ? c.points : 0, masts: c ? c.masts : 0, from: c ? PE.fmtKm(PE.kmOf(c.a), c.a % 10000) + '–' + PE.fmtKm(PE.kmOf(c.b), c.b % 10000) : '' }; });
+  const covered = covRows.filter(x => x.pct > 0).length;
+  const ck = om.length && rd.length ? PE.rdpsMastCheck(rd, om, 50) : null;
+  const mp = (W && W.mastPlace) || null;
+  const B7 = W ? ((PE.watchView(W, 'all').rules || []).find(r => r.id === 'B7')) : null, B8 = W ? ((PE.watchView(W, 'all').rules || []).find(r => r.id === 'B8')) : null;
+  const cTab = r => r && r.causes ? `<div class="scroll"><table class="t compact"><thead><tr><th>Cause</th><th>Count</th></tr></thead><tbody>${Object.entries(r.causes).sort((a, c) => c[1] - a[1]).map(([k, n]) => `<tr><td>${esc(k)}</td><td>${n}</td></tr>`).join('')}</tbody></table></div>` : '<div class="small muted">Not computed yet – update the watch.</div>';
+  const lst = (L, f, cap) => L.length ? `<div class="scroll" style="max-height:360px"><table class="t compact"><thead><tr>${f.map(x => `<th>${x[0]}</th>`).join('')}</tr></thead><tbody>${L.slice(0, cap).map(x => `<tr>${f.map(c => `<td>${esc(String(c[1](x)))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>${L.length > cap ? `<div class="small muted">first ${cap} of ${L.length} shown</div>` : ''}` : '<div class="small muted">None.</div>';
+  $('dhBox').outerHTML = `<div id="dhBox">
+  <div class="panel body"><div class="inner"><h3 style="margin:0 0 6px">RDPS survey coverage per TMS section-line</h3>
+    <div class="small">${rdE ? `RDPS survey press ${esc(rdE.pressLabel || PE.ist(rdE.at))}: ${rdE.summary.count} points.` : 'RDPS survey not loaded yet (Load TMS data → RDPS).'} <b>${covered} of ${lines.length}</b> TMS section-lines have RDPS points. RDPS supports the location card; it is never required and never overrides TMS.</div>
+    ${lst(covRows.sort((x, y) => y.pct - x.pct || x.lid.localeCompare(y.lid)), [['Section-line', x => x.lid], ['Line length (km)', x => x.km], ['RDPS covers', x => x.pct ? x.pct + ' %' : 'RDPS survey not available for this line'], ['RDPS km span', x => x.from || '—'], ['Survey points', x => x.pts], ['Masts in RDPS', x => x.masts]], 400)}</div></div>
+  <div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 6px">OHE masts – TMS mast list and placement</h3>
+    <div class="small">${omE ? `TMS OHE mast list press ${esc(omE.pressLabel || PE.ist(omE.at))}: ${omE.summary.count} masts (${(omE.summary.extra || {}).main || 0} on section-lines, the rest at station loops / crossovers).` : '<b>TMS OHE mast list not loaded yet</b> – records that give a mast stay on their block section / station until it is loaded (Load TMS data → OHE masts).'}</div>
+    ${mp ? `<div class="small" style="margin-top:4px">Rows that name a mast or a mast range: TMS machine progress <b>${mp.machineProg.refs}</b> (placed exactly by mast: <b>${mp.machineProg.placed}</b>) · Field Mini Control <b>${mp.fmc.refs}</b> (placed: <b>${mp.fmc.placed}</b>). Mast list ${mp.loaded ? 'loaded' : 'not loaded'} when the watch was computed (${esc(PE.ist(W.computedAt))}).${W.erhRows ? ` Engine running hours (ERH) read from ${W.erhRows} machine-progress rows – kept per machine per day, never used as a place.` : ''}</div>` : ''}
+    <h4 style="margin:12px 0 4px">RDPS masts compared with the TMS mast list (difference over 50 m, or missing in either)</h4>
+    ${ck ? `<div class="small">${ck.lines.length} section-lines compared · ${ck.far.length} masts more than 50 m apart · ${ck.onlyTms.length} in TMS only · ${ck.onlyRdps.length} in RDPS only. TMS stays the reference.</div>
+      ${lst(ck.far.sort((x, y) => y.dM - x.dM), [['Section-line', x => x.lid], ['Mast', x => x.mast], ['TMS km', x => PE.fmtKm(x.tms[0], x.tms[1])], ['RDPS km', x => PE.fmtKm(x.rdps[0], x.rdps[1])], ['Difference (m)', x => x.dM]], 300)}
+      <details><summary class="small">Masts in TMS only (${ck.onlyTms.length}) / in RDPS only (${ck.onlyRdps.length})</summary>${lst(ck.onlyTms.map(x => Object.assign({ w: 'TMS only' }, x)).concat(ck.onlyRdps.map(x => Object.assign({ w: 'RDPS only' }, x))), [['Where', x => x.w], ['Section-line', x => x.lid], ['Mast', x => x.mast], ['km', x => PE.fmtKm(x.km, x.m)]], 600)}</details>` : `<div class="small muted">${!om.length ? 'Waiting for the TMS OHE mast list.' : 'Waiting for the RDPS survey.'}</div>`}</div></div>
+  <div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 6px">Records not placed by the portal – by reason (B8, all lines)</h3>${cTab(B8)}
+    <h3 style="margin:14px 0 6px">Missing in TMS – by cause (B7, all lines)</h3>${cTab(B7)}
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn secondary sm" data-go2="B8">See all B8 items</button><button class="btn secondary sm" data-go2="B7">See all B7 items</button></div>
+    ${unknownNames(W)}</div></div></div>`;
+  document.querySelectorAll('#dhBox [data-go2]').forEach(x => x.onclick = () => go('miss', x.dataset.go2));
+};
 // ---------------------------------------------------------------- ADMIN: the rule registry
 VIEWS.rules = async (el) => {
   document.body.classList.remove('front');

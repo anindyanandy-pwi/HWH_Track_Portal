@@ -107,7 +107,8 @@ async function run(force) {
         say(`${PE.KIND_LABEL[kind]} – press of ${PE.pressLabel(p)}: reading ${p.files.length} file(s)…`);
         const parts = []; for (const f of p.files) parts.push(await readJson(kind + '/' + f));
         const F = PE.combineParts(parts); F.pressId = F.pressId || p.pressId;
-        const sl = PE.slimPress(kind, F, { N, L, recentFrom });
+        const ext = {}; (((H.S.boot || {}).health || {}).lines || []).forEach(l => { ext[l.lid] = [l.a, l.b]; });   // [C] TMS line extents for the RDPS survey
+        const sl = PE.slimPress(kind, F, { N, L, recentFrom, S, extents: ext });
         // [PB] B3: an empty press never replaces earlier good data – nothing is written, the press is only marked as read
         if (!sl.count && kind !== 'blockSections') {
           const good = (((H.S.boot || {}).loaded || {})[kind] || []).filter(x => x.complete && !(x.summary && x.summary.empty) && (x.rows || (x.summary && x.summary.count))).pop();

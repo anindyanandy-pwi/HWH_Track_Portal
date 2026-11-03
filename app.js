@@ -81,7 +81,8 @@ function settings() { return Object.assign({}, CFG.SETTINGS || {}, (S.boot && S.
 function names() { if (!S.N) S.N = PE.names(settings()); return S.N; }
 async function locator(note) {
   if (S.L) return S.L;
-  const fl = await files([{ kind: 'blockSections', group: '_all' }, { kind: 'assetIndex', group: '_all' }], note);
+  const fl = await files([{ kind: 'blockSections', group: '_all' }, { kind: 'assetIndex', group: '_all' }, { kind: 'oheMast', group: '_all' }], note);
+  PE.setMasts(snap(fl, 'oheMast', '_all') || null);   // [C] TMS OHE mast list (exact 200 m for records that give a mast)
   const bs = snap(fl, 'blockSections'); S.BS = Array.isArray(bs) ? bs[0] : bs; S.AI = snap(fl, 'assetIndex');
   S.L = PE.locator(names(), S.BS || { coa: [] }, S.AI || null); return S.L;
 }
@@ -94,7 +95,7 @@ function toast(msg, bad) { const d = document.createElement('div'); d.className 
 const VIEWS = {};
 function navs() {
   const A = S.boot && S.boot.role === 'admin';
-  return [['ov', 'Overview'], ['home', 'Three things'], ['loc', 'Location card'], ['reg', 'Work register']].concat(A ? [['#Admin'], ['load', 'Load TMS data'], ['rules', 'Watch rules'], ['fmc', 'Read Field Mini Control'], ['feed', 'Feed status'], ['links', 'Viewer links'], ['settings', 'Settings'], ['status', 'Version check']] : []);
+  return [['ov', 'Overview'], ['home', 'Three things'], ['loc', 'Location card'], ['reg', 'Work register']].concat(A ? [['#Admin'], ['load', 'Load TMS data'], ['rules', 'Watch rules'], ['dh', 'Data health'], ['fmc', 'Read Field Mini Control'], ['feed', 'Feed status'], ['links', 'Viewer links'], ['settings', 'Settings'], ['status', 'Version check']] : []);
 }
 function drawNav() {
   // [PB] B3: on a phone the bottom menu shows the four main pages + "More" (admin pages, language, theme); on a PC the side menu shows all
@@ -105,12 +106,23 @@ function drawNav() {
   $('navMore').onclick = () => {
     const rest = navs().filter(x => x[0][0] !== '#' && !MAIN[x[0]]);
     modal(`<h3 style="margin:0 0 10px">${UI.lang() === 'hi' ? 'और' : 'More'}</h3><div class="moresheet">${rest.map(x => `<button data-mk="${x[0]}" class="${x[0] === S.view ? 'on' : ''}">${esc(B(x[1]).p)}${B(x[1]).s ? ` <span class="small muted">${esc(B(x[1]).s)}</span>` : ''}</button>`).join('')}</div><div id="moreTools" style="margin-top:12px"></div>`);
-    $('moreTools').innerHTML = `<div class="moresheet" style="grid-template-columns:1fr 1fr"><button data-ml="en">English</button><button data-ml="hi">हिन्दी</button><button data-mt="light">${UI.lang() === 'hi' ? 'हल्का' : 'Light'}</button><button data-mt="dark">${UI.lang() === 'hi' ? 'गहरा' : 'Dark'}</button></div>`;
+    $('moreTools').innerHTML = `<div class="moresheet" style="grid-template-columns:1fr 1fr"><button data-ml="en">English</button><button data-ml="hi">हिन्दी</button><button data-mt="light">${UI.lang() === 'hi' ? 'हल्का' : 'Light'}</button><button data-mt="dark">${UI.lang() === 'hi' ? 'गहरा' : 'Dark'}</button><button data-mr="1" style="grid-column:1/-1">${UI.lang() === 'hi' ? 'नया डेटा लाएँ (रीफ़्रेश)' : 'Refresh – load the newest data'}</button></div>`;
+    $('moreTools').querySelector('[data-mr]').onclick = () => { closeModal(); const r = $('btnReload'); if (r) r.click(); };
     $('moreTools').querySelectorAll('[data-ml]').forEach(b => b.onclick = () => { closeModal(); UI.setLang(b.dataset.ml); });
     $('moreTools').querySelectorAll('[data-mt]').forEach(b => b.onclick = () => { closeModal(); UI.setTheme(b.dataset.mt); });
     document.querySelectorAll('#modalBody [data-mk]').forEach(b => b.onclick = () => { closeModal(); go(b.dataset.mk); });
   };
 }
+// [C] phone: every table.t gets its column names on each cell, so below tablet width (theme.css) a row shows as one card. Runs for tables added later too.
+function cardTables(root) {
+  (root || document).querySelectorAll('table.t:not(.keep)').forEach(t => {
+    const rows = t.querySelectorAll('tbody tr:not([data-l])'); if (!rows.length && t.classList.contains('rc')) return;
+    const hs = [...t.querySelectorAll('thead tr:last-child th')].map(th => th.textContent.trim());
+    rows.forEach(tr => { tr.setAttribute('data-l', ''); [...tr.children].forEach((td, i) => td.setAttribute('data-label', hs[i] || '')); });
+    t.classList.add('rc');
+  });
+}
+let CT = 0; try { new MutationObserver(() => { if (CT) return; CT = requestAnimationFrame(() => { CT = 0; cardTables(document); }); }).observe(document.documentElement, { childList: true, subtree: true }); } catch (e) { }
 function go(k, arg) { S.view = k; S.arg = arg; try { history.replaceState(null, '', '#' + k + (arg ? '/' + encodeURIComponent(arg) : '')); } catch (e) { } render(); }
 function render() {
   drawNav(); const el = $('views'); el.innerHTML = '';

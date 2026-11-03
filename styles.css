@@ -781,6 +781,7 @@ html[data-theme="dark"] .fx-ltsw button.on{background:#F29A2E;color:#231A12}
   .nav .admin-item,.nav .navgrp{display:none!important}
   .nav .more{display:flex}
   .top .org{display:none}
+  .top #uiTools,.top #btnReload{display:none!important}   /* [C] slim header: language, theme and refresh are in "More" */
   main{padding-left:16px;padding-right:16px}
 }
 body.front .nav{display:none!important}
@@ -795,3 +796,50 @@ html[data-theme="dark"] .fx-tcard .fx-btn{background:#F29A2E;color:#231A12}
 html[data-theme="dark"] .fx-score{background:#0E0D2B}
 @media (max-width:1000px){ html[data-theme="dark"] .nav button.on{background:none!important;color:#F29A2E!important} }
 html[data-theme="dark"] .fx .fx-btn.ghost{background:transparent;color:#F29A2E;border:1px solid #F29A2E}
+
+/* [C] work register: status count buttons, filter bar with removable chips, one card per work package with a status band */
+.wsum{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.wst{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;padding:10px 12px;min-height:64px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer;font:500 13px/1.3 var(--font)}
+.wst b{font:800 22px var(--num)}.wst.on{outline:3px solid var(--saffron);outline-offset:1px}
+.wst.ok b{color:var(--ok)}.wst.bad b{color:var(--crit)}.wst.warn b{color:var(--warn)}.wst.neu b{color:var(--neu)}
+.wbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+.wbar input{flex:1 1 180px;min-height:40px;border-radius:10px;border:1px solid var(--fieldline);background:var(--field);color:var(--ink);padding:0 10px;font:15px var(--font)}
+.wchips{display:flex;flex-wrap:wrap;gap:6px;width:100%}
+.wchip{min-height:34px;border-radius:999px;border:1px solid var(--accent);background:var(--accentbg);color:var(--accent);font:600 13px var(--font);padding:0 12px;cursor:pointer}
+.wcards{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px}
+.wcard{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;cursor:pointer}
+.wcard:focus-visible,.wcard:hover{border-color:var(--accent)}
+.wband{padding:7px 12px;font:700 13px var(--num);letter-spacing:.01em}
+.wband.ok{background:var(--okbg);color:var(--ok)}.wband.bad{background:var(--critbg);color:var(--crit)}.wband.warn{background:var(--warnbg);color:var(--warn)}.wband.neu{background:var(--neubg);color:var(--neu)}
+.wbody{padding:10px 12px;display:grid;gap:4px}
+.wtop{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline}
+.wline{font-size:13.5px;color:var(--sub)}
+.wline.od,.od{color:var(--crit)}
+.wtodo{font:600 13.5px var(--font);color:var(--ink);background:var(--cautbg);border-radius:8px;padding:6px 8px}
+.wform{display:grid;gap:10px}.wform label{display:grid;gap:4px;font:600 13px var(--font)}.wform select,.wform input{min-height:44px;border-radius:10px;border:1px solid var(--fieldline);background:var(--field);color:var(--ink);padding:0 10px;font:15px var(--font)}
+.wproofs{margin:0;padding-left:18px;font-size:14px}.wproofs li{margin:2px 0}
+
+/* [C] grouped list ("See all") and Data health */
+.lgrp{margin-top:14px}.lgrp h3{margin:0 0 6px;font:800 17px var(--num)}
+.lcards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:8px}
+.lcard{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:grid;gap:3px;font-size:14px}
+.lcard .lp{font:600 13px var(--mono);color:var(--sub)}
+.fx-causes{margin:6px 0 0;padding:0;list-style:none;font-size:13px}.fx-causes li{display:flex;justify-content:space-between;gap:8px;border-top:1px dashed var(--line,#EADBC4);padding:3px 0}.fx-causes b{font-family:var(--num)}
+
+/* [C] PHONE: tables become cards below tablet width (one card per row; the column name on the left); no card inside a card */
+@media (max-width:760px){
+  table.t.rc,table.t.rc tbody,table.t.rc tr,table.t.rc td{display:block;width:auto}
+  table.t.rc thead{display:none}
+  table.t.rc tr{background:var(--surface);border:1px solid var(--line);border-radius:12px;margin:0 0 8px;padding:6px 10px}
+  table.t.rc td{border:0!important;padding:3px 0!important;display:flex;gap:10px;justify-content:space-between;text-align:right;white-space:normal!important}
+  table.t.rc td::before{content:attr(data-label);font:700 11px var(--num);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);text-align:left;flex:0 0 38%}
+  table.t.rc td[data-label=""]::before{display:none}
+  table.t.rc tbody tr:hover td{background:none}
+  .panel:has(table.t.rc),.panel:has(.wcards),.panel:has(.lcards){background:transparent!important;border:0!important;box-shadow:none!important}
+  .panel:has(table.t.rc) > .inner{padding-left:0;padding-right:0}
+  .scroll:has(table.t.rc){overflow:visible}
+  .wsum{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .wcards,.lcards{grid-template-columns:1fr}
+  .phrow h1{font-size:22px}.pagehead .crumbs{font-size:12.5px}
+  .modalbox{width:calc(100vw - 16px)!important;max-height:calc(100vh - 24px)}
+}

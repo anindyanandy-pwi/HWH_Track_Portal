@@ -3,7 +3,7 @@
 (function () {
 'use strict';
 const H = window.HWHTP, UI = window.UI; const { $, esc, dmy, B, files, merge, snap, names, locator, pageHead, VIEWS, go, toast } = H;
-const TMS_KINDS = ['workSite', 'spotCards', 'assetChange', 'machineProg', 'trcRuns', 'tqiSix', 'condition', 'itms', 'health'];
+const TMS_KINDS = ['workSite', 'spotCards', 'assetChange', 'machineProg', 'trcRuns', 'tqiSix', 'condition', 'itms', 'health', 'rdps'];
 const LV = { Act: 't1', Watch: 't2', Info: 't3' };
 const SRC = { card: 'TMS spot card', tmsWork: 'TMS work site', asset: 'TMS asset change', machine: 'TMS machine progress', sheetWork: 'Field Mini Control', job: 'TMS Control job', appWork: 'TMS Control work record', condition: 'TMS condition', trcRun: 'TRC run' };
 const CF = ['km', 'ci', 'rs', 'rg', 'rl', 'cg', 'gy', 'lt', 'lm', 'ds', 'wf', 'cl', 'sr', 'ut', 'cv', 'br', 'lw', 'rn', 'sl'];
@@ -57,12 +57,12 @@ async function lineData(lid, note) {
   const want = TMS_KINDS.map(k => ({ kind: k, group: G })).concat([{ kind: 'fmc', group: '*' }, { kind: 'feed', group: '_all' }]);
   const fl = await files(want, note);
   const by = k => merge(fl, k, G);
-  const all = { ws: by('workSite'), sc: by('spotCards'), ac: by('assetChange'), mp: by('machineProg'), tr: by('trcRuns'), tq: by('tqiSix'), it: by('itms'), cond: snap(fl, 'condition', G) || [], health: snap(fl, 'health', G), feed: snap(fl, 'feed', '_all'), fmc: PE.fmcLocate(merge(fl, 'fmc').map(r => PE.fmcClean(r, H.settings())).filter(Boolean), L) };
+  const all = { ws: by('workSite'), sc: by('spotCards'), ac: by('assetChange'), mp: by('machineProg'), tr: by('trcRuns'), tq: by('tqiSix'), it: by('itms'), cond: snap(fl, 'condition', G) || [], rdps: snap(fl, 'rdps', G) || [], health: snap(fl, 'health', G), feed: snap(fl, 'feed', '_all'), fmc: PE.fmcLocate(merge(fl, 'fmc').map(r => PE.fmcClean(r, H.settings())).filter(Boolean), L) };
   CACHE[G] = l => {
     const f = x => x.lid === l; const feed = all.feed || { jobs: [], work: [], units: [] };
     const tqs = all.tq.filter(f).sort((a, b) => String(b.d).localeCompare(String(a.d)));
     const hl = all.health ? (all.health.lines || []).find(x => x.lid === l) : null; const hd = all.health && all.health.details ? all.health.details[l] : null;
-    const D = { lid: l, ws: all.ws.filter(f), sc: all.sc.filter(f), ac: all.ac.filter(f), mp: all.mp.filter(f), tr: all.tr.filter(f), tq: tqs[0] || null, itms: all.it.filter(f), cond: (all.cond || []).filter(f), fmc: all.fmc.filter(r => r.where && r.where.lid === l), jobs: (feed.jobs || []).filter(f), work: (feed.work || []).filter(f), units: (feed.units || []).filter(f), hl, hd, feedAt: feed.generatedAt, coverage: (H.S.boot && H.S.boot.fmc && H.S.boot.fmc.coverage) || {} };
+    const D = { lid: l, ws: all.ws.filter(f), sc: all.sc.filter(f), ac: all.ac.filter(f), mp: all.mp.filter(f), tr: all.tr.filter(f), tq: tqs[0] || null, itms: all.it.filter(f), cond: (all.cond || []).filter(f), rdps: (all.rdps || []).filter(f), fmc: all.fmc.filter(r => r.where && r.where.lid === l), jobs: (feed.jobs || []).filter(f), work: (feed.work || []).filter(f), units: (feed.units || []).filter(f), hl, hd, feedAt: feed.generatedAt, coverage: (H.S.boot && H.S.boot.fmc && H.S.boot.fmc.coverage) || {} };
     D.packages = PE.buildPackages(D.fmc, D.ws, { ac: D.ac, mp: D.mp, fw: D.work, sc: D.sc }, { S: H.settings(), N, coverage: D.coverage });
     return D;
   };
@@ -98,6 +98,7 @@ async function showCard(box, lid, km, m) {
     ${kpi(yr.length >= 3 ? 'warn' : 'ok', 'Spot cards', yr.length, 'last 12 months · ' + cards.length + ' in all')}
     ${kpi('acc', 'Work done', work.length, 'placed exactly here' + (near.length ? ' · +' + near.length + ' nearby (block section only)' : ''))}
   </div>
+  ${ground(D, km, ci)}
   <div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 8px">${UI.t('Reasons')}</h3>${R.reasons.length ? `<ul class="rlist" style="margin:0;padding-left:0;list-style:none">${R.reasons.map(r => `<li style="margin:6px 0"><span class="tag ${LV[r.lvl]}">${r.lvl === 'Info' ? 'Fact' : r.lvl}</span> ${esc(r.text)}</li>`).join('')}</ul>` : '<div class="muted">No rule fires here with the data loaded.</div>'}</div></div>
   <div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 8px">${UI.t('Open actions')}</h3>${R.actions.length ? `<ul style="margin:0;padding-left:18px">${R.actions.map(a => `<li>${esc(a.text)}</li>`).join('')}</ul>` : '<div class="muted">Nothing open here.</div>'}</div></div>
   ${profilePanel(prof, D, km, ci, tg)}
@@ -137,7 +138,7 @@ function evRefs(i) {
   const x = i.x, out = [];
   if (i.kind === 'sheetWork') { const L = { preImg: 'pre photo', postImg: 'post photo', certSafety: 'safety-staff cert.', certAgency: 'agency counselling cert.', certWork: 'work-details cert.', video: 'counselling video', pdf: 'measurement PDF', greasingImg: 'greasing photo' };
     Object.keys(L).forEach(k => { const r = (x.ev || {})[k]; if (!r) return; if (r.t === 'link') out.push(`<a href="${esc(r.url)}" target="_blank" rel="noopener">${L[k]}</a>`); else if (r.t === 'img') out.push(`<a href="${SHEET()}" target="_blank" rel="noopener" title="image placed in the sheet cell ${esc(r.cell)}">${L[k]} (cell ${esc(String(r.cell).split('!')[1] || '')})</a>`); else out.push(`<span title="${esc(r.text)}">${L[k]}: ${esc(String(r.text).slice(0, 30))}</span>`); });
-    const miss = PE.proofMissing(x); if (miss.length) out.push(`<span class="od">missing: ${miss.join(', ')}</span>`); }
+    const miss = PE.proofMissing(x); if (miss.length) out.push(`<span class="od">blank in your sheet: ${miss.map(PE.proofName).join(', ')}</span>`); }
   if (i.kind === 'tmsWork') (x.att || []).forEach(a => out.push(`<span class="small" title="TMS attachment ${esc(a.ref)} – open the work site in TMS (PopUpWorkSiteDetails.jsp?worksiteid=${esc(x.tid)})">TMS ${esc(a.s === 'Site Photos' ? 'site photo' : 'track parameters')} ${esc(a.k)}</span>`));
   if (i.kind === 'appWork') (x.photos || []).forEach(p => out.push(`<a href="https://drive.google.com/file/d/${esc(p.fileId)}/view" target="_blank" rel="noopener">${esc(p.kind)} photo</a>`));
   if (i.kind === 'card' && x.ph) out.push(`${x.ph} photo(s) in TMS`);
@@ -161,7 +162,7 @@ function what(i) {
 function timeline(items) {
   const L = items.filter(i => i.kind !== 'trcRun');
   if (!L.length) return '<div class="muted">No event recorded in this 200 m.</div>';
-  return `<div class="scroll"><table class="t compact"><thead><tr><th>Date</th><th>Source</th><th>What</th><th>Who</th><th>Evidence</th></tr></thead><tbody>${L.slice(0, 400).map(i => `<tr><td class="nw">${dmy(i.d)}</td><td class="small">${esc(SRC[i.kind] || i.kind)}${i.approx ? ' <span class="tag t3">approx</span>' : ''}</td><td class="wrap">${what(i)}</td><td class="small">${esc(i.kind === 'job' || i.kind === 'appWork' ? i.x.u : (i.x.by || i.x.who || i.x.done || i.x.u || ''))}</td><td class="small">${evRefs(i)}</td></tr>`).join('')}</tbody></table></div>${L.length > 400 ? `<div class="pager">${L.length} events – newest 400 shown</div>` : ''}`;
+  return `<div class="scroll"><table class="t compact"><thead><tr><th>Date</th><th>Source</th><th>What</th><th>Who</th><th>Evidence</th></tr></thead><tbody>${L.slice(0, 400).map(i => `<tr><td class="nw">${dmy(i.d)}</td><td class="small">${esc(SRC[i.kind] || i.kind)}${i.approx ? ' <span class="tag t3">block section / station only</span>' : ''}</td><td class="wrap">${what(i)}</td><td class="small">${esc(i.kind === 'job' || i.kind === 'appWork' ? i.x.u : (i.x.by || i.x.who || i.x.done || i.x.u || ''))}</td><td class="small">${evRefs(i)}</td></tr>`).join('')}</tbody></table></div>${L.length > 400 ? `<div class="pager">${L.length} events – newest 400 shown</div>` : ''}`;
 }
 function nearby(L) {
   if (!L.length) return '';
@@ -169,6 +170,20 @@ function nearby(L) {
   const span = L.map(i => { const w = i.kind === 'sheetWork' ? (i.x.where || {}) : i.x; return w.km != null && w.km2 != null ? Math.abs(PE.P(w.km2, w.m2) - PE.P(w.km, w.m)) / 10000 : 0; });
   return `<details style="margin-top:10px"><summary class="small"><b>Nearby – block section / station only</b> (${L.length} events, ranges up to ${Math.round(Math.max(...span) * 10) / 10} km) – not placed exactly, not counted, not used by the rules</summary>
    <div class="scroll"><table class="t compact"><thead><tr><th>Date</th><th>Source</th><th>Range</th><th>What</th><th>OHE mast</th></tr></thead><tbody>${L.slice(0, 300).map(i => `<tr><td class="nw">${dmy(i.d)}</td><td class="small">${esc(SRC[i.kind] || i.kind)}</td><td class="small nw">${rng(i)}</td><td class="wrap">${what(i)}</td><td class="small">${esc(((i.x.masts && i.x.masts.length ? i.x.masts : (i.x.where && i.x.where.masts) || [])).join(', '))}</td></tr>`).join('')}</tbody></table></div></details>`;
+}
+/** [C] "On the ground here": RDPS survey features of this 200 m when RDPS covers the line, else the same kinds from TMS's chart data. RDPS never overrides TMS. */
+const GK = { pc: 'Points & crossing', sej: 'SEJ / LWR end', curve: 'Curve', bridge: 'Bridge', lc: 'Level crossing', cutting: 'Cutting', gradient: 'Gradient', mast: 'OHE mast', station: 'Station', signal: 'Signal / cabin', neutral: 'Neutral section', userkey: 'Noted by the surveyor' };
+function ground(D, km, ci) {
+  const a = PE.P(km, ci * 200), b = ci === 4 ? PE.P(km + 1, 0) : PE.P(km, ci * 200 + 200);
+  const R = (D.rdps || []).filter(r => { const p = PE.P(r.km, r.m); return p >= a && p < b && r.k !== 'kmpost'; });
+  const head = (src) => `<div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 8px">On the ground here <span class="small muted">${src}</span></h3>`;
+  if ((D.rdps || []).length) {
+    const by = {}; R.forEach(r => { (by[r.k] = by[r.k] || []).push(r); });
+    return head('RDPS route survey (one-time GPS survey; TMS stays the reference)') + (R.length ? `<ul style="margin:0;padding-left:18px">${Object.keys(GK).filter(k => by[k]).map(k => `<li><b>${GK[k]}</b> (${by[k].length}): ${by[k].slice(0, 8).map(r => esc(String(r.t).replace(/^(TP\/OHE Mast|Point & Crossing|Curve (Start|End)|Bridge[^;]*)\s*/i, '')) + ' at ' + PE.fmtKm(r.km, r.m)).join(', ')}</li>`).join('')}</ul>` : '<div class="muted">RDPS survey covers this line; nothing surveyed in this 200 m.</div>') + '</div></div>';
+  }
+  const c = D.hl ? (D.hl.c || []).find(x => x[0] === km && x[1] === ci) : null; const f = c ? { cv: c[14], br: c[15], lw: c[16] } : {};
+  const li = [f.cv ? `<li><b>Curve</b>: ${esc(f.cv)}</li>` : '', f.br ? `<li><b>Bridge</b>: ${esc(f.br)}</li>` : '', f.lw ? `<li><b>LWR / SWR</b>: ${esc(f.lw)}</li>` : ''].join('');
+  return head('from TMS data – RDPS survey not available for this line') + (li ? `<ul style="margin:0;padding-left:18px">${li}</ul>` : '<div class="muted">TMS chart data shows no curve, bridge or LWR in this 200 m.</div>') + '</div></div>';
 }
 H.lineData = lineData; H.evRefs = evRefs;
 })();

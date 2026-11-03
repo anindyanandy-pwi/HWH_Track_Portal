@@ -47,9 +47,9 @@ self.onmessage = async (e) => {
   try {
     const N = PE.names(S);
     say('Blind-spot watch: getting the stored files (cards, chart data, runs, work, sheet, feed)…');
-    const fl = await files([{ kind: 'blockSections', group: '_all' }, { kind: 'assetIndex', group: '_all' }, { kind: 'health', group: '*' }, { kind: 'spotCards', group: '*' }, { kind: 'trcRuns', group: '_all' }, { kind: 'workSite', group: '_all' }, { kind: 'assetChange', group: '_all' }, { kind: 'machineProg', group: '_all' }, { kind: 'itms', group: '_all' }, { kind: 'condition', group: '*' }, { kind: 'fmc', group: '*' }, { kind: 'feed', group: '_all' }, { kind: 'watch', group: '_all' }, { kind: 'ballastCushion', group: '*' }, { kind: 'tampingDue', group: '*' }, { kind: 'fmcDays', group: '*' }, { kind: 'assetChange', group: '_none' }]);
+    const fl = await files([{ kind: 'blockSections', group: '_all' }, { kind: 'assetIndex', group: '_all' }, { kind: 'oheMast', group: '_all' }, { kind: 'health', group: '*' }, { kind: 'spotCards', group: '*' }, { kind: 'trcRuns', group: '_all' }, { kind: 'workSite', group: '_all' }, { kind: 'assetChange', group: '_all' }, { kind: 'machineProg', group: '_all' }, { kind: 'itms', group: '_all' }, { kind: 'condition', group: '*' }, { kind: 'fmc', group: '*' }, { kind: 'feed', group: '_all' }, { kind: 'watch', group: '_all' }, { kind: 'ballastCushion', group: '*' }, { kind: 'tampingDue', group: '*' }, { kind: 'fmcDays', group: '*' }, { kind: 'assetChange', group: '_none' }]);
     say('   files ready (' + fl.length + ') – computing…');
-    const bs = snap(fl, 'blockSections', '_all'); const L = PE.locator(N, (Array.isArray(bs) ? bs[0] : bs) || { coa: [] }, snap(fl, 'assetIndex', '_all'));
+    const bs = snap(fl, 'blockSections', '_all'); PE.setMasts(snap(fl, 'oheMast', '_all') || null); const L = PE.locator(N, (Array.isArray(bs) ? bs[0] : bs) || { coa: [] }, snap(fl, 'assetIndex', '_all'));
     const groups = k => [...new Set(fl.filter(f => f.kind === k && f.group !== '_all').map(f => f.group))];
     const health = groups('health').map(g => snap(fl, 'health', g)).filter(Boolean);
     const cards = merge(fl.filter(f => f.group !== '_all'), 'spotCards');

@@ -318,12 +318,14 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     (rdpsAll || []).forEach(function (p) { if (!p || p[5] !== 'mast' || !p[0]) return; var k = PE.mastKey(p[6]); if (!k) return; (R[p[0]] = R[p[0]] || {})[k] = { km: +p[1], m: +p[2] || 0, t: p[6] }; });
     (masts || []).forEach(function (r) { if (!r || !r.lid) return; var k = PE.mastKey(r.mast); if (!k) return; (T[r.lid] = T[r.lid] || {})[k] = { km: +r.km, m: +r.m || 0, t: r.mast }; });
     Object.keys(R).filter(function (l) { return T[l]; }).sort().forEach(function (lid) {
-      var a = R[lid], b = T[lid], n = { lid: lid, both: 0, far: 0, onlyRdps: 0, onlyTms: 0 };
+      var a = R[lid], b = T[lid], n = { lid: lid, both: 0, far: 0, onlyRdps: 0, onlyTms: 0 }; var sg = [];
       Object.keys(a).forEach(function (k) {
         if (!b[k]) { n.onlyRdps++; out.onlyRdps.push({ lid: lid, mast: k, km: a[k].km, m: a[k].m }); return; }
-        n.both++; var d = Math.round(Math.abs((a[k].km - b[k].km) * 1000 + (a[k].m - b[k].m)));
-        if (d > tolM) { n.far++; out.far.push({ lid: lid, mast: k, rdps: [a[k].km, a[k].m], tms: [b[k].km, b[k].m], dM: d }); }
+        n.both++; var sd = Math.round((a[k].km - b[k].km) * 1000 + (a[k].m - b[k].m)); sg.push(sd); var d = Math.abs(sd);
+        if (d > tolM) { n.far++; out.far.push({ lid: lid, mast: k, rdps: [a[k].km, a[k].m], tms: [b[k].km, b[k].m], dM: d, sM: sd }); }
       });
+      // [C3] the typical (median) shift of the whole line: a line-wide shift of the RDPS chainage reads differently from single wrong masts
+      if (sg.length) { sg.sort(function (x, y) { return x - y; }); n.med = sg[Math.floor(sg.length / 2)]; n.spread = sg[Math.floor(sg.length * 0.9)] - sg[Math.floor(sg.length * 0.1)]; }
       Object.keys(b).forEach(function (k) { if (!a[k]) { n.onlyTms++; out.onlyTms.push({ lid: lid, mast: k, km: b[k].km, m: b[k].m }); } });
       out.lines.push(n);
     });
@@ -447,7 +449,8 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
 var PE = (typeof PE !== 'undefined' && PE) || {};
 (function (PE) {
   'use strict';
-  PE.KINDS = ['blockSections', 'workSite', 'spotCards', 'assetChange', 'machineProg', 'trcRuns', 'tqiSix', 'condition', 'itms', 'ballastCushion', 'tampingDue', 'oheMast', 'rdps'];
+  // [C3] oheMast comes right after blockSections: records that name a mast are placed with it, so it must be read before machine progress and the rest
+  PE.KINDS = ['blockSections', 'oheMast', 'workSite', 'spotCards', 'assetChange', 'machineProg', 'trcRuns', 'tqiSix', 'condition', 'itms', 'ballastCushion', 'tampingDue', 'rdps'];
   PE.KIND_LABEL = { blockSections: 'Block sections', workSite: 'Work sites', spotCards: 'Spot attention cards', assetChange: 'Asset changes', machineProg: 'Machine progress', trcRuns: 'TRC run list', tqiSix: 'TQI six runs', condition: 'Condition layers', itms: 'ITMS runs', ballastCushion: 'Ballast cushion (asset register)', tampingDue: 'Tamping due (PML / CBML, turnouts)', oheMast: 'OHE mast list (TMS)', rdps: 'RDPS route survey', health: 'Track health (chart + GMT)' };
 
   /** several part files of one press -> one object with the record arrays joined */
@@ -460,6 +463,18 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       Object.keys(R).forEach(function (k) { var v = R[k]; if (Array.isArray(v)) out.records[k] = (out.records[k] || []).concat(v); else if (v && typeof v === 'object') out.records[k] = Object.assign(out.records[k] || {}, v); else out.records[k] = v; });
     });
     return out || { records: {} };
+  };
+
+  /** [C3] how many rows a press file really holds (arrays inside records, depth <= 2) – the loader's shape guard: when this is
+   *  above zero and slimPress returned nothing, the file shape was not understood (it is NOT an empty press). */
+  PE.pressRows = function (F) {
+    var R = (F && F.records) || {}; var n = 0;
+    var add = function (v, d) {
+      if (Array.isArray(v)) { n += v.length; if (d < 2) v.forEach(function (x) { if (x && typeof x === 'object' && !Array.isArray(x)) Object.keys(x).forEach(function (k) { if (Array.isArray(x[k])) add(x[k], d + 1); }); }); }
+      else if (v && typeof v === 'object' && d < 2) Object.keys(v).forEach(function (k) { add(v[k], d + 1); });
+    };
+    Object.keys(R).forEach(function (k) { add(R[k], 0); });
+    return n;
   };
 
   var put = null;
@@ -609,19 +624,30 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       extra = F.counts || {};
     }
     else if (kind === 'oheMast') {
-      // [C] TMS OHE mast / hecto post report: section or station, line / loop / crossover, mast no., chainage km + m. Main-line masts by section-line;
-      // loop / crossover masts by station + line name. Non-mast rows (TP, ELF, Mile end, x END) are skipped.
-      var mrows = R.masts || R.rows || F.rows || [];
-      mrows.forEach(function (x, i) {
-        var sec = x.section || x.sectionStation || x['Section/Station'] || '', ln = x.line || x['Line/Loopline/Xover'] || '', no = String(x.mast || x.mastNo || x['OHE Mast No.'] || '').trim();
-        var km = x.km != null ? +x.km : +x['Chainage km'], m = x.m != null ? +x.m : +x['m'];
-        if (!no || /^(TP|ELF|MILE|.*END)$/i.test(no) || isNaN(km)) return;
-        var pos = String(x.pos || x.position || x.kind || 'main').toLowerCase();
-        var lid = /loop|cross|xover/.test(pos) ? null : lidOf(sec, ln);
-        var r = { id: 'om' + i, lid: lid, stn: lid ? '' : s(sec).toUpperCase(), ln: ln, mast: no, key: PE.mastKey ? PE.mastKey(no) : no, km: km, m: m || 0, pos: pos };
-        count++; all.push(r); if (!lid && !r.stn) miss(r, 'section/line not known');
+      // [C3] TMS OHE mast / hecto post report, as the collector delivers it: records.main / loop / crossover, each row
+      // {place (section for main, station for loop / crossover), line, mast, km, m, kind}. kind 'mast' = a real mast; 'tp' / 'elf' /
+      // 'mileEnd' / 'end' are kept with notMast = 1 (counted, never used for placing). Main-line masts get the TMS section-line;
+      // loop / crossover masts keep the station and the line name.
+      var groups = [['main', R.main], ['loop', R.loop], ['crossover', R.crossover || R.xover]];
+      var nm = 0;
+      groups.forEach(function (g) {
+        var pos = g[0];
+        (g[1] || []).forEach(function (x, i) {
+          var place = s(x.place || x.section || x.sectionStation), ln = s(x.line), no = s(x.mast);
+          var km = x.km != null ? +x.km : NaN, m = x.m != null ? +x.m : 0;
+          if (!no || isNaN(km)) { miss({ place: place, line: ln, mast: no }, 'no mast number or chainage'); return; }
+          var real = String(x.kind || 'mast').toLowerCase() === 'mast';
+          var lid = pos === 'main' ? lidOf(place, ln) : null;
+          var r = { id: 'om' + pos.charAt(0) + i, lid: lid, stn: lid ? '' : place.toUpperCase(), ln: ln, mast: no, key: PE.mastKey ? PE.mastKey(no) : no, km: km, m: m || 0, pos: pos };
+          if (!real) { r.notMast = 1; r.k2 = String(x.kind || ''); nm++; }
+          count++; all.push(r); if (lid) put(by, lid, r);
+          if (!lid && !r.stn) miss(r, 'section / station not given');
+          else if (pos === 'main' && !lid) miss(r, 'section "' + place + '" line "' + ln + '" not a TMS section-line');
+        });
       });
-      extra = { rows: count, main: all.filter(function (r) { return r.lid; }).length };
+      var onLid = all.filter(function (r) { return r.lid; }).length;
+      extra = { rows: count, main: onLid, loop: all.filter(function (r) { return !r.lid; }).length, masts: count - nm, notMast: nm,
+        tms: R.reportingDate || '', lines: Object.keys(all.reduce(function (o, r) { if (r.lid) o[r.lid] = 1; return o; }, {})).length };
     }
     else if (kind === 'rdps') {
       // [C] RDPS survey points (prepared file, HWH lines): each point -> the TMS section-line of its route that covers its km (settings.rdps.routes,

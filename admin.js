@@ -100,6 +100,10 @@ async function run(force) {
     const bsRow = PLAN.rows.find(r => r.kind === 'blockSections');
     if (bsRow && bsRow.last) { const last = bsRow.last; const parts = await Promise.all(last.files.map(f => readJson('blockSections/' + f))); const sl = PE.slimPress('blockSections', PE.combineParts(parts), { N }); L = PE.locator(N, sl.all[0], null); }
     else { H.S.L = null; L = await H.locator(); }
+    const omRow = PLAN.rows.find(r => r.kind === 'oheMast');
+    if (!(omRow && omRow.fresh && omRow.fresh.length) && !force) {   // [C3] no new mast list in the folder: use the one already stored, so masts still place records
+      try { const fl = await H.files([{ kind: 'oheMast', group: '_all' }]); const om = H.snap(fl, 'oheMast', '_all'); if (om && om.length) { PE.setMasts(om); say(`OHE mast list: ${om.length} masts already stored – used to place records that name a mast.`); } } catch (e) { }
+    }
     for (const kind of PE.KINDS) {
       const row = PLAN.rows.find(r => r.kind === kind); if (!row || row.missing || row.error) continue;
       const presses = force && !row.fresh.length && row.last ? [row.last] : row.fresh;
@@ -108,9 +112,16 @@ async function run(force) {
         say(`${PE.KIND_LABEL[kind]} – press of ${PE.pressLabel(p)}: reading ${p.files.length} file(s)…`);
         const parts = []; for (const f of p.files) parts.push(await readJson(kind + '/' + f));
         const F = PE.combineParts(parts); F.pressId = F.pressId || p.pressId;
-        const ext = {}; (((H.S.boot || {}).health || {}).lines || []).forEach(l => { ext[l.lid] = [l.a, l.b]; });   // [C] TMS line extents for the RDPS survey
+        // [C3] line extents for the RDPS survey: the TMS chart when it is already stored, PLUS the block-section mapping read in this
+        // run – on a FIRST load the chart is processed after this loop, so without the mapping every survey point stayed unplaced.
+        const ext = {}; (((H.S.boot || {}).health || {}).lines || []).forEach(l => { ext[l.lid] = [l.a, l.b]; });
+        if (L && L.byBs) Object.values(L.byBs).flat().forEach(c => { if (!c.lid || c.a == null) return; const x = ext[c.lid] = ext[c.lid] || [c.a, c.b]; x[0] = Math.min(x[0], c.a); x[1] = Math.max(x[1], c.b); });
         const sl = PE.slimPress(kind, F, { N, L, recentFrom, S, extents: ext });
         // [PB] B3: an empty press never replaces earlier good data – nothing is written, the press is only marked as read
+        // [C3] a press is only EMPTY when the file really holds no rows; rows present + nothing slimmed = the file shape was not understood
+        const rawRows = PE.pressRows(F);
+        if (kind === 'oheMast' && sl.all.length) { PE.setMasts(sl.all); say(`   OHE mast list ready – records that name a mast are placed with it from here on`); }
+        if (!sl.count && rawRows > 0) throw new Error(`file shape not understood – the file holds ${rawRows} rows but the portal read none of them (${kind}, press ${PE.pressLabel(p)}). The loader for this kind must be updated; nothing was changed.`);
         if (!sl.count && kind !== 'blockSections') {
           const good = (((H.S.boot || {}).loaded || {})[kind] || []).filter(x => x.complete && !(x.summary && x.summary.empty) && (x.rows || (x.summary && x.summary.count))).pop();
           const kept = good ? (good.pressLabel || PE.pressLabel({ at: good.pressAt || good.at, pressId: good.pressId })) : '—';

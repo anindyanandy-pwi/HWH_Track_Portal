@@ -146,6 +146,28 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   /** a TMS data press shown by the collector's pressLabel / atIst, else its time in IST – never the raw press id */
   PE.pressLabel = function (p) { if (!p) return '—'; if (typeof p === 'string') return PE.ist(p); return p.pressLabel || (p.atIst ? (/IST/.test(p.atIst) ? p.atIst : p.atIst + ' IST') : PE.ist(p.at || p.pressAt || p.pressId)); };
   PE.blank = function (v) { return !String(v == null ? '' : v).trim(); };
+
+  // ---------------------------------------------------------------- [C2] a setting shown in words (never "[object Object]", never the internal name)
+  var mo = function (d) { var m = Math.round(d / 30.44); return m + ' month' + (m === 1 ? '' : 's'); };
+  var SW = {
+    trcBySpeed: ['TRC interval by sanctioned sectional speed', function (v) { var L = (v || []).slice().sort(function (a, b) { return b.above - a.above; }); return L.map(function (x, i) { var up = i ? L[i - 1].above : null; return (x.above > 0 ? 'above ' + x.above + (up ? ' to ' + up : '') + ' km/h' : 'up to ' + (up || '?') + ' km/h') + ' → ' + mo(x.days); }).join('; '); }],
+    trcGraceDays: ['grace before "overdue"', function (v) { return v + ' days'; }],
+    trcDays: ['TRC interval when the speed is not used', function (v) { return v + ' days'; }],
+    itmsDays: ['ITMS run expected every', function (v) { return v + ' days'; }],
+    p1Days: ['P1 card to be attended within', function (v) { return v + ' days'; }], p2Days: ['P2 card to be attended within', function (v) { return v + ' days'; }],
+    repeatCards: ['cards on the same 200 m', function (v) { return v + ' or more'; }], repeatMonths: ['within', function (v) { return v + ' months'; }],
+    h2WindowDays: ['TRC run after the work within', function (v) { return v + ' days'; }], h2MinGain: ['TGI must improve by at least', function (v) { return v + ' points'; }],
+    lifeWatch: ['rail life used (GMT)', function (v) { return Math.round(v * 100) + ' % or more'; }], h5Fractures: ['rail fractures / weld failures', function (v) { return v + ' or more'; }],
+    h5Months: ['within', function (v) { return v + ' months'; }], h5NearKm: ['within', function (v) { return v + ' km'; }],
+    b6TgiBelow: ['TGI below', function (v) { return String(v); }], b6Months: ['nobody acting for', function (v) { return v + ' months'; }],
+    maxRecords: ['records listed per rule', function (v) { return 'at most ' + v; }]
+  };
+  PE.settingLabel = function (k) { return SW[k] ? SW[k][0] : String(k).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase(); };
+  PE.settingWords = function (k, v) {
+    if (SW[k]) { try { return SW[k][1](v); } catch (e) { } }
+    var w = function (x) { if (x == null || x === '') return 'not set'; if (Array.isArray(x)) return x.map(w).join('; '); if (typeof x === 'object') return Object.keys(x).filter(function (q) { return q.charAt(0) !== '_'; }).map(function (q) { return PE.settingLabel(q) + ' ' + w(x[q]); }).join(', '); return String(x); };
+    return w(v);
+  };
 })(PE);
 
 
@@ -157,10 +179,11 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
 var PE = (typeof PE !== 'undefined' && PE) || {};
 (function (PE) {
   'use strict';
-  var LT = { siding: [], loop: [], ask: [], main: [] };
+  var LT = { siding: [], loop: [], ask: [], main: [], assign: [] };
   var rx = function (a) { return (a || []).map(function (w) { return new RegExp(w, 'i'); }); };
   /** settings.lineType: {siding: [regex…], loop: [regex…], ask: [regex…]} – ask = names the program must not decide (avoiding / fly-over lines …) */
-  PE.setLineTypes = function (o) { o = o || {}; LT = { siding: rx(o.siding), loop: rx(o.loop), ask: rx(o.ask), main: (o.mainNamed || []).map(function (x) { return { tag: x.tag, re: new RegExp(x.re, 'i') }; }) }; };
+  PE.setLineTypes = function (o) { o = o || {}; LT = { siding: rx(o.siding), loop: rx(o.loop), ask: rx(o.ask), main: (o.mainNamed || []).map(function (x) { return { tag: x.tag, re: new RegExp(x.re, 'i') }; }),
+    assign: (o.assign || []).filter(function (x) { return x && x.re && /^(main|loop|siding)$/.test(x.t); }).map(function (x) { var r; try { r = new RegExp(x.re, 'i'); } catch (e) { return null; } return { t: x.t, tag: x.tag || '', re: r, src: x.re }; }).filter(Boolean) }; };
   // [PB] B2a: P&C register (TMS asset changes "pnx": station, point no., line, km, line type) – decides P&C spot cards
   var PNX = null; var pkey = function (x) { return String(x || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); };
   PE.setPnx = function (list) { if (!list || !list.length) { PNX = null; return; } PNX = {}; (list || []).forEach(function (p) { if (!p || p.km == null) return; var k = pkey(p.to || p.turnout); if (!k) return; (PNX[k] = PNX[k] || []).push(p); }); };
@@ -171,6 +194,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   /** by a line NAME alone: {t, src} | null */
   PE.lineTypeByName = function (name) {
     var s = String(name || '').trim(); if (!s) return null;
+    for (var j = 0; j < LT.assign.length; j++) if (LT.assign[j].re.test(s)) return { t: LT.assign[j].t, sub: LT.assign[j].tag || undefined, src: 'line name "' + s + '" = ' + (LT.assign[j].tag || PE.LT_TAG[LT.assign[j].t] + ' line') + ' (assigned on Data health)' };
     for (var i = 0; i < LT.main.length; i++) if (LT.main[i].re.test(s)) return { t: 'main', sub: LT.main[i].tag, src: 'line name "' + s + '" = ' + LT.main[i].tag + ' (main line, settings.lineType.mainNamed)' };
     var a = any(LT.ask, s); if (a) return { t: null, src: 'line name "' + s + '" – not decided (rule /' + a + '/ in settings.lineType.ask)' };
     if (any(LT.siding, s)) return { t: 'siding', src: 'line name "' + s + '"' };
@@ -235,6 +259,9 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     try { r.ltp = o.t; r.ltps = o.src; r.ltsub = o.sub || ''; } catch (e) { }
     return o;
   };
+  /** [C2] a name's pattern for grouping and for assigning: "QUARRY LINE 2" -> "QUARRY LINE #"; the regex that matches every name of the pattern */
+  PE.namePattern = function (name) { return String(name || '').trim().toUpperCase().replace(/\s+/g, ' ').replace(/\d+/g, '#'); };
+  PE.patternRe = function (pat) { return '^\\s*' + String(pat).replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&').replace(/ /g, '\\s*').replace(/#/g, '\\d+') + '\\s*$'; };
   PE.LT_LABEL = { main: ['Main line', 'मुख्य लाइन'], loop: ['Loop lines', 'लूप लाइन'], all: ['All lines', 'सभी लाइन'] };
   PE.LT_TAG = { main: 'Main', loop: 'Loop', siding: 'Siding' };
   /** does a record of type t belong to a view ('main' | 'loop' | 'all')? unknown (null) only in "all" */

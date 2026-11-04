@@ -300,8 +300,41 @@ function unknownNames(W) {
   const L = (W && W.unknownNames) || []; const lt = (W && W.lineTypes) || {};
   const split = Object.entries(lt).map(([k, c]) => `<tr><td>${esc(kindTxt(k))}</td><td>${c.main}${Object.keys(c).filter(x => !['main', 'loop', 'siding', 'unknown', 'total'].includes(x)).map(x => ` <span class="small muted">(incl. ${c[x]} ${esc(x.toLowerCase())})</span>`).join('')}</td><td>${c.loop}</td><td>${c.siding}</td><td>${c.unknown ? `<b class="od">${c.unknown}</b>` : 0}</td></tr>`).join('');
   return `<h3 style="margin:18px 0 6px">Line type – main / loop / siding / unknown</h3><div class="scroll"><table class="t compact" id="ltSplit"><thead><tr><th>Data</th><th>Main</th><th>Loop</th><th>Siding</th><th>Unknown</th></tr></thead><tbody>${split}</tbody></table></div>
-  <h3 style="margin:18px 0 6px">Line names not typed yet (${L.length})</h3><p class="small muted">Assign them in Settings → Advanced JSON → <code>lineType</code>: add the name (or a pattern) to <code>loop</code>, <code>siding</code> or <code>mainNamed</code>. The watch is computed again by itself.</p>
-  ${L.length ? `<div class="scroll" style="max-height:420px"><table class="t compact" id="ltUnknown"><thead><tr><th>Line name</th><th>Station / section</th><th>Data</th><th>Count</th><th>Why</th></tr></thead><tbody>${L.map(x => `<tr><td><code>${esc(x.name)}</code></td><td>${esc(x.station || '—')}</td><td class="small">${esc(kindTxt(x.kind))}</td><td>${x.n}</td><td class="small muted">${esc(x.why)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="muted">None.</div>'}`;
+  ${namesBox(L)}`;
+}
+// [C2] line names not typed yet – grouped by pattern ("QUARRY LINE #"), each with a plain choice saved at once; the watch is computed again after
+const LT_CHOICES = [['main', '', 'Main'], ['loop', '', 'Loop'], ['siding', '', 'Siding'], ['main', 'Avoiding line', 'Avoiding'], ['main', 'Fly-over', 'Fly-over']];
+const nameOk = n => n && n.length <= 60 && !/^(no |line not given|P&C card|asset register|TMS line|place )/i.test(n);
+function nameGroups(L) {
+  names(); const g = {}; L.forEach(x => { if (!nameOk(x.name)) return; if (PE.lineTypeByName(x.name)) return;   // typed since the watch was computed
+    const p = PE.namePattern(x.name); const o = g[p] = g[p] || { pat: p, names: {}, n: 0, kinds: {}, st: {} }; o.names[x.name] = 1; o.n += x.n; o.kinds[kindTxt(x.kind)] = 1; if (x.station && x.station.charAt(0) !== '_') o.st[x.station] = 1; });
+  return Object.values(g).sort((a, b) => b.n - a.n);
+}
+function namesBox(L) {
+  const A = (H.S.boot || {}).role === 'admin'; const G = nameGroups(L); const other = L.filter(x => !nameOk(x.name));
+  const asg = (((H.settings() || {}).lineType || {}).assign || []);
+  return `<h3 style="margin:18px 0 6px">Line names not typed yet (${G.length} names / patterns, ${G.reduce((a, x) => a + x.n, 0)} records)</h3>
+  <p class="small muted">${A ? 'Choose what each line is. It is saved at once and the watch is computed again in the background. "#" stands for any number (QUARRY LINE # = QUARRY LINE 1, 2 …).' : 'The admin assigns these.'}</p>
+  ${G.length ? `<div class="lcards" id="ltNames">${G.slice(0, 300).map((x, i) => `<div class="lcard" data-gi="${i}"><div><b>${esc(x.pat)}</b> <span class="small muted">· ${x.n} record${x.n === 1 ? '' : 's'}</span></div>
+    <div class="small muted">${esc(Object.keys(x.names).slice(0, 4).join(', '))}${Object.keys(x.names).length > 4 ? ' …' : ''} · ${esc(Object.keys(x.kinds).join(', '))}${Object.keys(x.st).length ? ' · ' + esc(Object.keys(x.st).slice(0, 4).join(', ')) : ''}</div>
+    ${A ? `<div class="ltch" role="group" aria-label="line type of ${esc(x.pat)}">${LT_CHOICES.map((c, j) => `<button class="btn secondary sm" data-ch="${j}">${c[2]}</button>`).join('')}</div>` : ''}</div>`).join('')}</div>` : '<div class="small muted">None – every line name is typed.</div>'}
+  ${other.length ? `<details style="margin-top:8px"><summary class="small">Records that cannot be typed by a name (${other.reduce((a, x) => a + x.n, 0)}) – no line given, P&C point not in the P&C register …</summary><div class="scroll"><table class="t compact"><thead><tr><th>Why</th><th>Data</th><th>Count</th></tr></thead><tbody>${other.slice(0, 200).map(x => `<tr><td class="small">${esc(x.why)}</td><td class="small">${esc(kindTxt(x.kind))}</td><td>${x.n}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
+  ${asg.length ? `<details style="margin-top:8px"><summary class="small">Already assigned on this page (${asg.length})</summary><div class="lcards">${asg.map((a, i) => `<div class="lcard"><div><b>${esc(a.name || a.re)}</b> = ${esc(a.tag || PE.LT_TAG[a.t] + ' line')}</div><div class="small muted">${esc(a.by || '')} ${a.at ? esc(PE.ist(a.at)) : ''}</div>${A ? `<div><button class="btn ghost sm" data-unasg="${i}">Remove</button></div>` : ''}</div>`).join('')}</div></details>` : ''}`;
+}
+/** wire the choices after the page is drawn */
+function wireNames(root, L) {
+  const G = nameGroups(L); const asg = (((H.settings() || {}).lineType || {}).assign || []);
+  const save = async (args, done) => {
+    const r = await call('lineTypeAssign', args); if (H.S.boot) { H.S.boot.settings = r.settings; ST.set('kv', H.BOOTKEY, H.S.boot).catch(() => { }); }
+    PE.setLineTypes(r.settings.lineType); H.S.N = null; if (H.S.L !== undefined) H.S.L = null; if (VIEWS.reg && VIEWS.reg.clear) VIEWS.reg.clear();
+    done(); if (H.watchUpdate) H.watchUpdate(t => { H.lastSay = t.trim(); }).then(() => toast(HI() ? 'निगरानी अद्यतन' : 'Watch updated with the new line types'), e => { if (!e.cancelled) toast('Watch not updated: ' + (e.error || e), true); });
+  };
+  root.querySelectorAll('#ltNames [data-gi]').forEach(card => card.querySelectorAll('[data-ch]').forEach(b => b.onclick = async () => {
+    const x = G[+card.dataset.gi], c = LT_CHOICES[+b.dataset.ch]; card.querySelectorAll('button').forEach(q => q.disabled = true);
+    try { await save({ re: PE.patternRe(x.pat), name: x.pat, t: c[0], tag: c[1] }, () => { card.innerHTML = `<div><b>${esc(x.pat)}</b> = ${esc(c[1] || PE.LT_TAG[c[0]] + ' line')} <span class="small">– saved, the watch is being computed again</span></div>`; }); }
+    catch (e) { toast(e.error || String(e), true); card.querySelectorAll('button').forEach(q => q.disabled = false); }
+  }));
+  root.querySelectorAll('[data-unasg]').forEach(b => b.onclick = async () => { const a = asg[+b.dataset.unasg]; b.disabled = true; try { await save({ re: a.re, t: '' }, () => { b.closest('.lcard').innerHTML = `<div><b>${esc(a.name || a.re)}</b> – removed</div>`; }); } catch (e) { toast(e.error || String(e), true); b.disabled = false; } });
 }
 // ---------------------------------------------------------------- [C] causes of B7 / B8, and the grouped "See all" list
 /** [[cause, count]…] largest first – division: the complete stored counts; a unit / AEN: the listed records in scope */
@@ -375,6 +408,7 @@ VIEWS.dh = async (el) => {
     <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn secondary sm" data-go2="B8">See all B8 items</button><button class="btn secondary sm" data-go2="B7">See all B7 items</button></div>
     ${unknownNames(W)}</div></div></div>`;
   document.querySelectorAll('#dhBox [data-go2]').forEach(x => x.onclick = () => go('miss', x.dataset.go2));
+  wireNames($('dhBox'), (W && W.unknownNames) || []);
 };
 // ---------------------------------------------------------------- ADMIN: the rule registry
 VIEWS.rules = async (el) => {
@@ -385,8 +419,9 @@ VIEWS.rules = async (el) => {
   const S = H.settings().watch || {};
   $('ruBox').outerHTML = `<div class="panel body"><div class="inner"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="btn primary" id="ruGo">Update the watch now</button><span class="small muted">${W ? 'computed ' + esc(PE.ist(W.computedAt)) + (watchStale() ? ' · <b class="od">older than the data held</b>' : ' · up to date') : 'not computed yet'}</span></div><pre id="ruLog" class="log hidden" style="margin-top:8px;white-space:pre-wrap"></pre></div></div>
   <div class="panel body" style="margin-top:12px"><div class="inner"><div class="scroll"><table class="t compact"><thead><tr><th>Id</th><th>Rule</th><th>Status</th><th>Count</th><th>Needs</th><th>Thresholds (Settings → watch)</th></tr></thead><tbody>
-  ${reg.map(r => { const g = got[r.id] || {}; const miss = (r.needs || []).filter(k => !(g.status === 'ready')); const st = g.status || (r.run ? 'not computed' : 'waiting'); return `<tr><td><b>${esc(r.id)}</b></td><td class="wrap"><b>${esc(r.en)}</b> · ${esc(r.hi)}<div class="small">${esc(r.rule)}</div>${g.note ? `<div class="small muted">${esc(g.note)}</div>` : ''}${g.error ? `<div class="small od">${esc(g.error)}</div>` : ''}</td><td><span class="tag ${st === 'ready' ? 't3' : st === 'error' ? 't1' : 't2'}">${esc(st)}</span>${st === 'waiting' ? `<div class="small">for: ${esc(((g.missing && g.missing.length ? g.missing : r.needs) || []).map(kindTxt).join(', '))}</div>` : ''}</td><td>${g.count != null ? g.count : '—'}</td><td class="small">${esc((r.needs || []).map(kindTxt).join(', '))}${(r.later || []).length ? `<div class="muted">later: ${esc(r.later.map(kindTxt).join(', '))}</div>` : ''}</td><td class="small">${(r.thresholds || []).map(k => `${esc(k)} = <b>${esc(S[k])}</b>`).join('<br>') || '—'}</td></tr>`; }).join('')}
+  ${reg.map(r => { const g = got[r.id] || {}; const miss = (r.needs || []).filter(k => !(g.status === 'ready')); const st = g.status || (r.run ? 'not computed' : 'waiting'); return `<tr><td><b>${esc(r.id)}</b></td><td class="wrap"><b>${esc(r.en)}</b> · ${esc(r.hi)}<div class="small">${esc(r.rule)}</div>${g.note ? `<div class="small muted">${esc(g.note)}</div>` : ''}${g.error ? `<div class="small od">${esc(g.error)}</div>` : ''}</td><td><span class="tag ${st === 'ready' ? 't3' : st === 'error' ? 't1' : 't2'}">${esc(st)}</span>${st === 'waiting' ? `<div class="small">for: ${esc(((g.missing && g.missing.length ? g.missing : r.needs) || []).map(kindTxt).join(', '))}</div>` : ''}</td><td>${g.count != null ? g.count : '—'}</td><td class="small">${esc((r.needs || []).map(kindTxt).join(', '))}${(r.later || []).length ? `<div class="muted">later: ${esc(r.later.map(kindTxt).join(', '))}</div>` : ''}</td><td class="small">${(r.thresholds || []).map(k => `${esc(PE.settingLabel(k))}: <b>${esc(PE.settingWords(k, S[k]))}</b>`).join('<br>') || 'none'}</td></tr>`; }).join('')}
   </tbody></table></div>${unknownNames(W)}<p class="small muted">A new rule is one entry in engine/watch.js (PE.addWatchRule) – the screens list whatever the registry holds. Only exactly placed events count; block-section / station-only records never do.</p></div></div>`;
+  wireNames(document.getElementById('views') || document, (W && W.unknownNames) || []);
   $('ruGo').onclick = async () => { $('ruGo').disabled = true; const lg = $('ruLog'); lg.classList.remove('hidden'); lg.textContent = ''; try { await watchUpdate(t => { lg.textContent += t + '\n'; }); H.render(); } catch (e) { lg.textContent += 'ERROR: ' + (e.error || e.message || e); } $('ruGo').disabled = false; };
 };
 })();

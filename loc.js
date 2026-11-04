@@ -3,7 +3,7 @@
 (function () {
 'use strict';
 const H = window.HWHTP, UI = window.UI; const { $, esc, dmy, B, files, merge, snap, names, locator, pageHead, VIEWS, go, toast } = H;
-const TMS_KINDS = ['workSite', 'spotCards', 'assetChange', 'machineProg', 'trcRuns', 'tqiSix', 'condition', 'itms', 'health', 'rdps'];
+const TMS_KINDS = ['workSite', 'spotCards', 'assetChange', 'machineProg', 'trcRuns', 'tqiSix', 'condition', 'itms', 'health', 'kCopies', 'rdps'];
 const LV = { Act: 't1', Watch: 't2', Info: 't3' };
 const SRC = { card: 'TMS spot card', tmsWork: 'TMS work site', asset: 'TMS asset change', machine: 'TMS machine progress', sheetWork: 'Field Mini Control', job: 'TMS Control job', appWork: 'TMS Control work record', condition: 'TMS condition', trcRun: 'TRC run' };
 const CF = ['km', 'ci', 'rs', 'rg', 'rl', 'cg', 'gy', 'lt', 'lm', 'ds', 'wf', 'cl', 'sr', 'ut', 'cv', 'br', 'lw', 'rn', 'sl'];
@@ -57,12 +57,12 @@ async function lineData(lid, note) {
   const want = TMS_KINDS.map(k => ({ kind: k, group: G })).concat([{ kind: 'fmc', group: '*' }, { kind: 'feed', group: '_all' }]);
   const fl = await files(want, note);
   const by = k => merge(fl, k, G);
-  const all = { ws: by('workSite'), sc: by('spotCards'), ac: by('assetChange'), mp: by('machineProg'), tr: by('trcRuns'), tq: by('tqiSix'), it: by('itms'), cond: snap(fl, 'condition', G) || [], rdps: snap(fl, 'rdps', G) || [], health: snap(fl, 'health', G), feed: snap(fl, 'feed', '_all'), fmc: PE.fmcLocate(merge(fl, 'fmc').map(r => PE.fmcClean(r, H.settings())).filter(Boolean), L) };
+  const all = { ws: by('workSite'), sc: by('spotCards'), ac: by('assetChange'), mp: by('machineProg'), tr: by('trcRuns'), tq: by('tqiSix'), it: by('itms'), insp: by('kCopies'), cond: snap(fl, 'condition', G) || [], rdps: snap(fl, 'rdps', G) || [], health: snap(fl, 'health', G), feed: snap(fl, 'feed', '_all'), fmc: PE.fmcLocate(merge(fl, 'fmc').map(r => PE.fmcClean(r, H.settings())).filter(Boolean), L) };
   CACHE[G] = l => {
     const f = x => x.lid === l; const feed = all.feed || { jobs: [], work: [], units: [] };
     const tqs = all.tq.filter(f).sort((a, b) => String(b.d).localeCompare(String(a.d)));
     const hl = all.health ? (all.health.lines || []).find(x => x.lid === l) : null; const hd = all.health && all.health.details ? all.health.details[l] : null;
-    const D = { lid: l, ws: all.ws.filter(f), sc: all.sc.filter(f), ac: all.ac.filter(f), mp: all.mp.filter(f), tr: all.tr.filter(f), tq: tqs[0] || null, itms: all.it.filter(f), cond: (all.cond || []).filter(f), rdps: (all.rdps || []).filter(f), fmc: all.fmc.filter(r => r.where && r.where.lid === l), jobs: (feed.jobs || []).filter(f), work: (feed.work || []).filter(f), units: (feed.units || []).filter(f), hl, hd, feedAt: feed.generatedAt, coverage: (H.S.boot && H.S.boot.fmc && H.S.boot.fmc.coverage) || {} };
+    const D = { lid: l, ws: all.ws.filter(f), sc: all.sc.filter(f), ac: all.ac.filter(f), mp: all.mp.filter(f), tr: all.tr.filter(f), tq: tqs[0] || null, itms: all.it.filter(f), insp: all.insp.filter(f), cond: (all.cond || []).filter(f), rdps: (all.rdps || []).filter(f), fmc: all.fmc.filter(r => r.where && r.where.lid === l), jobs: (feed.jobs || []).filter(f), work: (feed.work || []).filter(f), units: (feed.units || []).filter(f), hl, hd, feedAt: feed.generatedAt, coverage: (H.S.boot && H.S.boot.fmc && H.S.boot.fmc.coverage) || {} };
     D.packages = PE.buildPackages(D.fmc, D.ws, { ac: D.ac, mp: D.mp, fw: D.work, sc: D.sc }, { S: H.settings(), N, coverage: D.coverage });
     return D;
   };
@@ -98,6 +98,7 @@ async function showCard(box, lid, km, m) {
     ${kpi(yr.length >= 3 ? 'warn' : 'ok', 'Spot cards', yr.length, 'last 12 months · ' + cards.length + ' in all')}
     ${kpi('acc', 'Work done', work.length, 'placed exactly here' + (near.length ? ' · +' + near.length + ' nearby (block section only)' : ''))}
   </div>
+  ${lastInspections(D, km, ci)}
   ${ground(D, km, ci)}
   <div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 8px">${UI.t('Reasons')}</h3>${R.reasons.length ? `<ul class="rlist" style="margin:0;padding-left:0;list-style:none">${R.reasons.map(r => `<li style="margin:6px 0"><span class="tag ${LV[r.lvl]}">${r.lvl === 'Info' ? 'Fact' : r.lvl}</span> ${esc(r.text)}</li>`).join('')}</ul>` : '<div class="muted">No rule fires here with the data loaded.</div>'}</div></div>
   <div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 8px">${UI.t('Open actions')}</h3>${R.actions.length ? `<ul style="margin:0;padding-left:18px">${R.actions.map(a => `<li>${esc(a.text)}</li>`).join('')}</ul>` : '<div class="muted">Nothing open here.</div>'}</div></div>
@@ -170,6 +171,22 @@ function nearby(L) {
   const span = L.map(i => { const w = i.kind === 'sheetWork' ? (i.x.where || {}) : i.x; return w.km != null && w.km2 != null ? Math.abs(PE.P(w.km2, w.m2) - PE.P(w.km, w.m)) / 10000 : 0; });
   return `<details style="margin-top:10px"><summary class="small"><b>Nearby – block section / station only</b> (${L.length} events, ranges up to ${Math.round(Math.max(...span) * 10) / 10} km) – not placed exactly, not counted, not used by the rules</summary>
    <div class="scroll"><table class="t compact"><thead><tr><th>Date</th><th>Source</th><th>Range</th><th>What</th><th>OHE mast</th></tr></thead><tbody>${L.slice(0, 300).map(i => `<tr><td class="nw">${dmy(i.d)}</td><td class="small">${esc(SRC[i.kind] || i.kind)}</td><td class="small nw">${rng(i)}</td><td class="wrap">${what(i)}</td><td class="small">${esc(((i.x.masts && i.x.masts.length ? i.x.masts : (i.x.where && i.x.where.masts) || [])).join(', '))}</td></tr>`).join('')}</tbody></table></div></details>`;
+}
+/** [D1] last inspection of each kind for this 200 m (trolley / foot / foot-plate by km on the line) and for the assets in it (P&C / LC / LWR / curve), with date and by whom. */
+const INSP_NAME = { trolley: 'Push trolley', foot: 'On foot', footplate: 'Foot plate / rear vehicle', pc: 'Points & crossing', lc: 'Level crossing', lwr: 'LWR / CWR', curve: 'Curve' };
+function lastInspections(D, km, ci) {
+  const I = D.insp || []; if (!I.length) return '';
+  const latest = {};
+  I.forEach(r => {
+    let hit = false;
+    if (r.g === 'trolley' || r.g === 'foot' || r.g === 'footplate') hit = r.km != null && km >= r.km && km <= (r.km2 != null ? r.km2 : r.km);
+    else { const p = PE.P(r.km, r.m); hit = r.km != null && p >= PE.P(km, ci * 200) && p < (ci === 4 ? PE.P(km + 1, 0) : PE.P(km, ci * 200 + 200)); }
+    if (!hit) return; const o = latest[r.g]; if (!o || r.d > o.d) latest[r.g] = r;
+  });
+  const keys = Object.keys(INSP_NAME).filter(k => latest[k]);
+  if (!keys.length) return '';
+  return `<div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 8px">Last inspection here <span class="small muted">TMS inspection copies</span></h3>
+    <div class="scroll"><table class="t compact"><thead><tr><th>Inspection</th><th>Latest</th><th>By</th><th>What</th></tr></thead><tbody>${keys.map(k => { const r = latest[k]; return `<tr><td>${esc(INSP_NAME[k])}</td><td class="nw">${esc(PE.istDate(r.d))}</td><td class="small">${esc(r.by || '—')}</td><td class="small">${r.asset ? esc((r.asset) + (r.stn ? ' at ' + r.stn : '')) : (r.km != null ? 'km ' + PE.fmtKm(r.km, 0) + (r.km2 != null ? '–' + PE.fmtKm(r.km2, 0) : '') : '')}</td></tr>`; }).join('')}</tbody></table></div></div></div>`;
 }
 /** [C] "On the ground here": RDPS survey features of this 200 m when RDPS covers the line, else the same kinds from TMS's chart data. RDPS never overrides TMS. */
 const GK = { pc: 'Points & crossing', sej: 'SEJ / LWR end', curve: 'Curve', bridge: 'Bridge', lc: 'Level crossing', cutting: 'Cutting', gradient: 'Gradient', mast: 'OHE mast', station: 'Station', signal: 'Signal / cabin', neutral: 'Neutral section', userkey: 'Noted by the surveyor' };

@@ -160,8 +160,27 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     lifeWatch: ['rail life used (GMT)', function (v) { return Math.round(v * 100) + ' % or more'; }], h5Fractures: ['rail fractures / weld failures', function (v) { return v + ' or more'; }],
     h5Months: ['within', function (v) { return v + ' months'; }], h5NearKm: ['within', function (v) { return v + ' km'; }],
     b6TgiBelow: ['TGI below', function (v) { return String(v); }], b6Months: ['nobody acting for', function (v) { return v + ' months'; }],
-    maxRecords: ['records listed per rule', function (v) { return 'at most ' + v; }]
+    maxRecords: ['records listed per rule', function (v) { return 'at most ' + v; }],
+    trolleyMonths: ['push trolley', function (v) { return 'once in ' + v + ' calendar months'; }],
+    footMonths: ['on foot', function (v) { return 'once in ' + v + ' calendar months'; }],
+    footSpeedAbove: ['on foot only where sectional speed is above', function (v) { return v + ' km/h'; }],
+    footplateFortnight: ['foot plate / rear vehicle', function (v) { return v === false ? 'not by fortnight' : 'every fortnight (1–15, 16–month end)'; }],
+    pcPassengerMonths: ['P&C on passenger running lines', function (v) { return 'every ' + v + ' months'; }],
+    pcOtherMonths: ['P&C on other lines', function (v) { return 'every ' + v + ' months'; }],
+    lcMonths: ['level crossing', function (v) { return 'every ' + v + ' months'; }],
+    lwrMonths: ['LWR / CWR', function (v) { return 'every ' + v + ' months'; }],
+    curveMonths: ['curve', function (v) { return 'every ' + v + ' months'; }],
+    overdueOldDays: ['listed apart once overdue by more than', function (v) { return v + ' days'; }],
+    by: ['who may inspect', function (v) { var L = { incharge: 'SSE/P.Way in-charge only', jeSseAden: 'any of JE / SSE / ADEN (latest)' }; return Object.keys(v || {}).map(function (k) { return k + ': ' + (L[v[k]] || v[k]); }).join('; '); }]
   };
+  // [D1] inspection "by whom": the SSE/P.Way IN-CHARGE of a unit is exactly "SSE/P.Way/<unit>" – not a JE, not an ADEN, and not a sub
+  // (/SPL, /ML, /YD, a numbered JE like JE/PW/1/PKR). Used for trolley / foot / foot-plate (in-charge only); per-asset rules accept JE / SSE / ADEN.
+  PE.isIncharge = function (by) {
+    var t = String(by || '').toUpperCase().replace(/\s+/g, '').replace(/P\.?WAY|P\.?W\b/g, 'PW');
+    var m = t.match(/^SSE\/PW\/([A-Z0-9()]+)$/);
+    return !!(m && !/^(SPL|ML|YD|\d)$/.test(m[1]));
+  };
+  PE.inspBy = function (by) { var t = String(by || '').toUpperCase(); return /^(SSE|JE|AD?EN|ADEN)\b/.test(t.replace(/\s+/g, '')) || /^(SSE|JE|ADEN|AEN)\//.test(t); };
   PE.settingLabel = function (k) { return SW[k] ? SW[k][0] : String(k).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase(); };
   PE.settingWords = function (k, v) {
     if (SW[k]) { try { return SW[k][1](v); } catch (e) { } }
@@ -573,8 +592,8 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
 (function (PE) {
   'use strict';
   // [C3] oheMast comes right after blockSections: records that name a mast are placed with it, so it must be read before machine progress and the rest
-  PE.KINDS = ['blockSections', 'oheMast', 'workSite', 'spotCards', 'assetChange', 'machineProg', 'trcRuns', 'tqiSix', 'condition', 'itms', 'ballastCushion', 'tampingDue', 'rdps'];
-  PE.KIND_LABEL = { blockSections: 'Block sections', workSite: 'Work sites', spotCards: 'Spot attention cards', assetChange: 'Asset changes', machineProg: 'Machine progress', trcRuns: 'TRC run list', tqiSix: 'TQI six runs', condition: 'Condition layers', itms: 'ITMS runs', ballastCushion: 'Ballast cushion (asset register)', tampingDue: 'Tamping due (PML / CBML, turnouts)', oheMast: 'OHE mast list (TMS)', rdps: 'RDPS route survey', health: 'Track health (chart + GMT)' };
+  PE.KINDS = ['blockSections', 'oheMast', 'workSite', 'spotCards', 'assetChange', 'machineProg', 'trcRuns', 'tqiSix', 'condition', 'itms', 'ballastCushion', 'tampingDue', 'kCopies', 'rdps'];
+  PE.KIND_LABEL = { blockSections: 'Block sections', workSite: 'Work sites', spotCards: 'Spot attention cards', assetChange: 'Asset changes', machineProg: 'Machine progress', trcRuns: 'TRC run list', tqiSix: 'TQI six runs', condition: 'Condition layers', itms: 'ITMS runs', ballastCushion: 'Ballast cushion (asset register)', tampingDue: 'Tamping due (PML / CBML, turnouts)', oheMast: 'OHE mast list (TMS)', kCopies: 'Inspection copies', rdps: 'RDPS route survey', health: 'Track health (chart + GMT)' };
 
   /** several part files of one press -> one object with the record arrays joined */
   PE.combineParts = function (files) {
@@ -820,6 +839,40 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
         count++; all.push(r); put(by, p.lid, r); if (!p.lid) miss(r, 'section/line not known');
       });
     }
+    else if (kind === 'kCopies') {
+      // [D1] inspection copies (registers + TMS Latest Inspection Report). records.inspections holds two shapes in one list:
+      //  - per-asset ("inspection history"): P&C, P&C Diamond, LC, LWR, Curve – {type, assetId, km, m, by, date, section, line, station, asset}
+      //  - linear register entries: Push / Motor Trolley, On Foot, Foot Plate, Rear Vehicle – {type, kmFrom, kmTo, line, section, by, date}
+      // Each is normalised to a group (trolley / foot / footplate / pc / lc / lwr / curve), placed on its TMS section-line, and kept with its
+      // date and who did it. Nothing is judged here (that is the B2 rule); only exactly-placed, dated inspections are stored.
+      var GRP = { 'Push Trolley': 'trolley', 'Motor Trolley': 'trolley', 'On Foot': 'foot', 'Foot Plate': 'footplate', 'Rear Vehicle': 'footplate',
+        'P&C': 'pc', 'P&C Diamond': 'pc', 'LC': 'lc', 'LWR': 'lwr', 'Curve': 'curve' };
+      var LINEAR = { trolley: 1, foot: 1, footplate: 1 };
+      var minD = '', maxD = '';
+      (R.inspections || []).forEach(function (x, i) {
+        var g = GRP[x.type]; if (!g) return;                                   // Rail and others have no B2 schedule
+        var d = PE.isoDate(x.date) || String(x.date || '').slice(0, 10); if (!/^\d{4}-\d\d-\d\d$/.test(d)) return;
+        var who = s(x.by); var lid = x.section ? lidOf(x.section, x.line) : (x.line ? lidOf(N.groupOf ? '' : '', x.line) : null);
+        if (!minD || d < minD) minD = d; if (!maxD || d > maxD) maxD = d;
+        var r;
+        if (LINEAR[g]) {
+          var kf = x.kmFrom != null ? +x.kmFrom : (x.km != null ? +x.km : null), kt = x.kmTo != null ? +x.kmTo : kf;
+          var lks = N.fieldLines ? N.fieldLines(x.line) : []; if (!lks.length && x.line) lks = [N.lineKey ? N.lineKey(x.line) : s(x.line).toUpperCase()];
+          r = { g: g, ty: x.type, lid: lid, lks: lks, km: kf, m: 0, km2: kt, m2: 0, d: d, by: who, inc: PE.isIncharge(who), ln: s(x.line), sec: s(x.section), rt: (x.headOther && x.headOther.route) || '' };
+          r.id = 'kc' + g + '|' + (x.source || '') + '|' + d + '|' + (x.kmFrom || '') + '-' + (x.kmTo || '') + '|' + by;
+        } else {
+          r = { g: g, ty: x.type, lid: lid, km: x.km != null ? +x.km : null, m: x.m != null ? +x.m : 0, aid: s(x.assetId), asset: s(x.asset), stn: s(x.station), ln: s(x.line), d: d, by: who };
+          r.id = x.key ? 'kc' + x.key : 'kc' + g + '|' + r.aid + '|' + d + '|' + by;
+        }
+        count++; all.push(r);
+        if (lid) put(by, lid, r);
+        else if (!(r.lks && r.lks.length)) miss(r, 'no section and no line');   // [D1] a linear inspection keeps its line key; it is placed by line key + km in the B2 rule (it still rides in the _all list)
+        else miss(r, 'section/line not known');
+      });
+      extra = { inspections: count, from: minD, to: maxD, byLine: all.filter(function (r) { return !r.lid && r.lks && r.lks.length; }).length, byGroup: (function () { var o = {}; all.forEach(function (r) { o[r.g] = (o[r.g] || 0) + 1; }); return o; })(), tms: F.counts || null };
+      // the storage group is the TMS section-line group, as for every other kind
+    }
+
     var located = 0; Object.keys(by).forEach(function (k) { if (k !== '_none') located += by[k].length; });
     return { kind: kind, pressId: F.pressId || '', at: F.at || '', window: F.window || null, byGroup: by, all: all, count: count, located: located, unlocated: (by._none || []).length, unlocatedSample: unl, extra: extra, tmsCounts: F.counts || null };
   };
@@ -1488,6 +1541,22 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   function isoWeek(d) { var t = new Date(d + 'T00:00:00Z'); var day = (t.getUTCDay() + 6) % 7; t.setUTCDate(t.getUTCDate() - day + 3); var f = new Date(Date.UTC(t.getUTCFullYear(), 0, 4)); return t.getUTCFullYear() + '-W' + PE.p2(1 + Math.round(((t - f) / 864e5 - 3 + ((f.getUTCDay() + 6) % 7)) / 7)); }
   PE.isoWeek = isoWeek; PE.lastMonths = lastMonths;
 
+  // [D1] inspection schedule as TMS counts it: overdue only once the DUE calendar period is over. months M -> deadline = end of the month
+  // M months after the last inspection's month; a fortnight rule -> deadline = end of the fortnight after the one holding the last inspection.
+  function addMonthsEnd(ym, M) { var y = +ym.slice(0, 4), m = +ym.slice(5, 7) + M; while (m > 12) { m -= 12; y++; } return monthEnd(y + '-' + PE.p2(m)); }
+  function fnDeadline(d) { var y = +d.slice(0, 4), m = +d.slice(5, 7), day = +d.slice(8, 10);
+    if (day <= 15) return y + '-' + PE.p2(m) + '-' + PE.p2(new Date(Date.UTC(y, m, 0)).getUTCDate());   // last in 1-15 -> end of same month's 2nd fortnight
+    m++; if (m > 12) { m = 1; y++; } return y + '-' + PE.p2(m) + '-15';                                  // last in 16-end -> 15th of next month
+  }
+  /** last inspection date (or '') -> {state:'in time'|'overdue'|'never', deadline, ageDays} given interval (months or fortnight) and today */
+  PE.inspDue = function (last, today, opt) {
+    if (!last) return { state: 'never', deadline: '', ageDays: null };
+    var dl = opt.fortnight ? fnDeadline(last) : addMonthsEnd(monthOf(last), opt.months);
+    if (today <= dl) return { state: 'in time', deadline: dl, ageDays: 0 };
+    return { state: 'overdue', deadline: dl, ageDays: PE.daysBetween(dl, today) };
+  };
+
+
   // ---------------------------------------------------------------- the 200 m stretches (cells) of the division, with their unit
   /** cells from the health files: [{key, lid, km, ci, cg, rs, tgi:[[v, date]...]}]; units: feed units (level 2 = in-charge) */
   PE.watchCells = function (healthGroups, units) {
@@ -1568,7 +1637,76 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
         monthly: monthly, extra: { due: due.length, dueKm: Math.round(due.length * 0.2), speedUnknown: X.speedUnknown.length }, note: due.length + ' more stretches due within the 1-month grace', dataOf: ['tms'] };
     } });
   // B2 – not inspected
-  R({ id: 'B2', group: 'B', en: 'Not inspected', hi: 'निरीक्षण नहीं हुआ', rule: 'No trolley / foot / footplate inspection over the stretch in time', needs: ['inspections'], thresholds: [], unitText: 'stretches' });
+  // B2 – not inspected in time (as TMS counts it; KPI rules, to be checked against IRPWM 2024 Table 1B)
+  // [D1] push trolley / foot / foot-plate per km per line (foot only where sectional speed > 110 km/h; by the SSE/P.Way in-charge only),
+  // and P&C / LC / LWR / curve per asset (latest by any of JE / SSE / ADEN). Overdue only once the due calendar period is over. More than
+  // one year overdue, or no inspection found in the loaded history, are listed apart and NOT in the main figure. Where the history does not
+  // reach back, the item reads "no inspection found since <data start>", never "never inspected".
+  R({ id: 'B2', group: 'B', views: ['main', 'all'], en: 'Not inspected in time', hi: 'निरीक्षण समय पर नहीं', needs: ['inspections'],
+    rule: 'No push trolley / on-foot / foot-plate inspection of the km in its calendar window, or a P&C / LC / LWR / curve past its interval – as TMS counts it (KPI rules), to be checked against IRPWM 2024 Table 1B',
+    thresholds: ['trolleyMonths', 'footMonths', 'footplateFortnight', 'footSpeedAbove', 'pcPassengerMonths', 'pcOtherMonths', 'lcMonths', 'lwrMonths', 'curveMonths', 'overdueOldDays', 'by'],
+    unitText: 'items',
+    run: function (X) {
+      var today = X.today, S = (X.W.inspection) || {}, insp = X.insp || [], C = X.C;
+      var old = S.overdueOldDays || 365; var dataFrom = X.inspFrom || (insp.length ? insp.map(function (r) { return r.d; }).sort()[0] : '');
+      var KINDS = {
+        trolley: { en: 'Push trolley', opt: { months: S.trolleyMonths || 2 }, by: 'incharge', per: 'km' },
+        foot: { en: 'On foot (speed > ' + (S.footSpeedAbove || 110) + ' km/h)', opt: { months: S.footMonths || 2 }, by: 'incharge', per: 'km', speed: S.footSpeedAbove || 110 },
+        footplate: { en: 'Foot plate / rear vehicle', opt: { fortnight: S.footplateFortnight !== false }, by: 'incharge', per: 'km' },
+        pc: { en: 'Points & crossings', by: 'jeSseAden', per: 'asset' },
+        lc: { en: 'Level crossings', opt: { months: S.lcMonths || 2 }, by: 'jeSseAden', per: 'asset' },
+        lwr: { en: 'LWR / CWR', opt: { months: S.lwrMonths || 6 }, by: 'jeSseAden', per: 'asset' },
+        curve: { en: 'Curves', opt: { months: S.curveMonths || 12 }, by: 'jeSseAden', per: 'asset' }
+      };
+      var spd = X.speedOf || {};
+      var byd = {}; insp.forEach(function (r) { (byd[r.g] = byd[r.g] || []).push(r); });
+      var tally = {}, records = [], due = {};
+      var push = function (g, state, rec) { var t = tally[g]; if (state === 'overdue') { if (rec.ageDays > old) { t.old++; } else { t.overdue++; records.push(rec); } } else if (state === 'never') { t.never++; } };
+
+      // --- linear: per km per line, over the chart cells grouped by line + km
+      var lkOf = function (lid) { var g2 = X.N ? X.N.groupOf(lid) : '_other'; var line = g2 && g2.charAt(0) !== '_' ? String(lid).slice(g2.length + 1) : String(lid).replace(/^\S+\s/, ''); return X.N ? X.N.lineKey(line) : line.toUpperCase(); };
+      ['trolley', 'foot', 'footplate'].forEach(function (g) {
+        var K = KINDS[g]; tally[g] = { en: K.en, per: 'km', overdue: 0, old: 0, never: 0, inTime: 0, total: 0 };
+        var L = (byd[g] || []).filter(function (r) { return r.inc && r.lks && r.lks.length; });   // in-charge only; matched by running-line key + km
+        var idx = {}; L.forEach(function (r) { r.lks.forEach(function (k) { (idx[k] = idx[k] || []).push(r); }); });
+        var kmSeen = {};
+        C.list.forEach(function (c) {
+          if (g === 'foot' && !(+spd[c.lid] > K.speed)) return;                                  // on foot only where speed > 110
+          var key = c.lid + '|' + c.km; if (kmSeen[key]) return; kmSeen[key] = 1;                 // judged per km, not per 200 m
+          var lk = lkOf(c.lid); var last = ''; (idx[lk] || []).forEach(function (r) { if (r.km != null && c.km >= r.km && c.km <= (r.km2 != null ? r.km2 : r.km) && r.d > last) last = r.d; });
+          var st = PE.inspDue(last, today, K.opt); tally[g].total++;
+          if (st.state === 'in time') { tally[g].inTime++; return; }
+          var txt = (g === 'foot' ? 'On foot' : g === 'trolley' ? 'Push trolley' : 'Foot plate') + ': ' +
+            (last ? 'last ' + PE.ist(last) + ', due by ' + PE.ist(st.deadline) + ' (' + st.ageDays + ' days over)' : 'no inspection found' + (dataFrom ? ' since ' + PE.ist(dataFrom) : '')) +
+            (last ? '' : ' – the loaded history starts ' + (dataFrom ? PE.ist(dataFrom) : '(unknown)'));
+          push(g, st.state, { lid: c.lid, km: c.km, m: c.ci * 200, unit: c.unit, lt: 'main', g: g, d: last, ageDays: st.ageDays, text: txt });
+          (due[c.lid] = due[c.lid] || {})[g] = 1;
+        });
+      });
+
+      // --- per asset: the latest inspection per asset (any of JE / SSE / ADEN)
+      ['pc', 'lc', 'lwr', 'curve'].forEach(function (g) {
+        var K = KINDS[g]; tally[g] = { en: K.en, per: 'asset', overdue: 0, old: 0, never: 0, inTime: 0, total: 0 };
+        var byAsset = {}; (byd[g] || []).forEach(function (r) { var a = r.aid || (r.lid + '|' + r.asset); var o = byAsset[a]; if (!o || r.d > o.d) byAsset[a] = r; });
+        Object.keys(byAsset).forEach(function (a) {
+          var r = byAsset[a]; var months = K.opt ? K.opt.months : (passengerPC(r, X) ? (S.pcPassengerMonths || 3) : (S.pcOtherMonths || 12));
+          var st = PE.inspDue(r.d, today, { months: months }); tally[g].total++;
+          if (st.state === 'in time') { tally[g].inTime++; return; }
+          var nm = K.en.replace(/s$/, '') + ' ' + (r.asset || a) + (r.stn ? ' at ' + r.stn : '') + (r.lid ? ' (' + r.lid + ')' : '');
+          var txt = nm + ': last ' + PE.ist(r.d) + ' by ' + (r.by || '—') + ', due by ' + PE.ist(st.deadline) + ' (' + st.ageDays + ' days over)' + (g === 'pc' ? ' – ' + months + '-month interval' : '');
+          push(g, st.state, { lid: r.lid, km: r.km, m: r.m, unit: '', lt: null, g: g, aid: a, d: r.d, ageDays: st.ageDays, text: txt });
+          if (r.lid) (due[r.lid] = due[r.lid] || {})[g] = 1;
+        });
+      });
+
+      var count = Object.keys(tally).reduce(function (a, g) { return a + tally[g].overdue; }, 0);
+      var oldN = Object.keys(tally).reduce(function (a, g) { return a + tally[g].old; }, 0);
+      var neverN = Object.keys(tally).reduce(function (a, g) { return a + tally[g].never; }, 0);
+      return { records: records, count: count, snapshot: true, dataOf: ['tms'],
+        extra: { byKind: tally, old: oldN, never: neverN, dataFrom: dataFrom, dueByLine: due },
+        note: 'as TMS counts it (KPI rules) – to be checked against IRPWM 2024 Table 1B' + (oldN + neverN ? '; ' + oldN + ' over a year overdue and ' + neverN + ' with no inspection in the loaded history are listed apart' : '') };
+    } });
+
   // B3 – card closed, nothing done
   R({ id: 'B3', group: 'B', en: 'Closed, nothing done', hi: 'बंद, कार्य दर्ज नहीं', rule: 'Spot card closed in TMS with no action recorded (cards whose details are fetched)', needs: ['spotCards'], thresholds: [], unitText: 'cards',
     run: function (X) {
@@ -1736,6 +1874,8 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
 
   // ---------------------------------------------------------------- run everything
   /** D: {S, today, health:[groups], units, trc, cards, ws, fmc (located), feedWork, jobs, acRecent, mpRecent, cond, itms, loaded, fmcCoverage, dataAt:{tms, fmc, feed}, prev (previous watch file)} */
+  // [D1] a P&C counts as "on a passenger running line" (3-month interval) when its line is a main line; else 12 months.
+  function passengerPC(r, X) { var lt = PE.lineTypeOfText ? PE.lineTypeOfText(r.ln, X.N) : null; if (lt && lt.t) return lt.t === 'main'; return r.lid ? PE.isRunningKey(String(r.lid).replace(/^\S+\s/, '').toUpperCase().replace(/[^A-Z0-9]/g, '')) : false; }
   PE.computeView = function (D) {
     var S = D.S || {}, W = Object.assign({}, S.watch || {}), today = D.today;
     var C = PE.watchCells(D.health, D.units);
@@ -1761,7 +1901,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     var pk = PE.buildPackages(D.fmc || [], D.ws || [], { ac: D.acRecent || [], mp: D.mpRecent || [], fw: D.feedWork || [], sc: [] }, { S: S, N: D.N, coverage: D.fmcCoverage || {} });
     var fmcCovered = {}; Object.keys(D.fmcCoverage || {}).forEach(function (d) { fmcCovered[monthOf(d)] = 1; });
     var unplaced = []; (D.fmc || []).forEach(function (r) { var w = r.where || {}; if (w.lid) return; var m = (r.masts || []).length; unplaced.push({ cause: m ? (w.how === 'mast' ? 'Sheet: mast not in the TMS mast list' : 'Sheet: mast given – TMS mast list not loaded') : 'Sheet: place not recognised', unit: r.u, d: r.date, lt: r.ltp, where: (r.bs || '') + ' ' + (r.line || ''), text: r.tab + ' ' + PE.ist(r.date) + ' – ' + (r.bs || 'no place') + ' ' + (r.line || '') + ': ' + (w.note || 'not placed') }); });
-    var X = { unplaced: unplaced, speedOf: speedOf, view: D.view || 'all', Cu: Cu, unknown: D.unknown || [], days: D.days || [], tamping: D.tamping || [], S: S, W: W, today: today, C: C, has: has, trc: D.trc || [], cards: cards, detailShare: cards.length ? withDet / cards.length : 0, work: work, pk: pk, jobs: D.jobs || [], cond: D.cond || [], ballast: [], fmcCovered: fmcCovered, notPlaced: D.notPlaced || {}, results: {} };
+    var X = { unplaced: unplaced, speedOf: speedOf, view: D.view || 'all', Cu: Cu, unknown: D.unknown || [], days: D.days || [], tamping: D.tamping || [], S: S, W: W, today: today, C: C, has: has, trc: D.trc || [], cards: cards, detailShare: cards.length ? withDet / cards.length : 0, work: work, pk: pk, jobs: D.jobs || [], cond: D.cond || [], ballast: [], fmcCovered: fmcCovered, notPlaced: D.notPlaced || {}, insp: D.insp || [], inspFrom: D.inspFrom || '', N: D.N, results: {} };
     // [PB] B1a: ballast register stretches with their unit (running line: the unit of the first 200 m; station yard: the station's unit given by the page)
     var BT = (S.rules && S.rules.byLineType) || {};
     X.ballast = (D.ballast || []).map(function (b) {
@@ -1923,7 +2063,8 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
     });
     var b4 = get('B4'); if (b4 && b4.status === 'ready') { var g = (b4.records || []).filter(inU); if (g.length) out.push({ rank: 2, tag: 'Enter in TMS', title: g.length + ' work' + (g.length > 1 ? 's' : '') + ' done, not in TMS', why: g.slice(0, 2).map(function (r) { return r.text.split(' – ')[0] + ' (' + r.d + ')'; }).join(' and ') + ' – in Field Mini Control with proof, no TMS work site.', go: { view: 'reg', arg: 'sheet only' }, btn: 'See the works' }); }
     ['H1', 'H2', 'H5', 'H4'].forEach(function (id) { var h = get(id); if (!h || h.status !== 'ready') return; (h.records || []).filter(inU).slice(0, 1).forEach(function (r) { out.push({ rank: 3, lt: r.lt, tag: 'Hidden · ' + h.en, title: r.title + (r.lid ? ' – ' + r.lid + ' ' + PE.fmtKm(r.km, r.m) : ''), why: r.seen, go: r.lid ? { view: 'loc', arg: r.lid + '|' + r.km + '|' + (r.m || 0) } : { view: 'ov' }, btn: 'See the evidence' }); }); });
-    var b1 = get('B1'); if (b1 && b1.status === 'ready') (b1.records || []).filter(inU).sort(function (a, b) { return b.n - a.n; }).slice(0, 1).forEach(function (r) { out.push({ rank: 4, lt: r.lt, tag: 'Overdue check', title: 'Not recorded: ' + r.lid + ' km ' + PE.fmtKm(r.km, r.m) + ' – ' + PE.fmtKm(r.km2, r.m2), why: r.text + ' (' + (Math.round(r.n * 0.2 * 10) / 10) + ' km).', go: { view: 'loc', arg: r.lid + '|' + r.km + '|' + (r.m || 0) }, btn: 'Open the place' }); });
+    var b2 = get('B2'); if (b2 && b2.status === 'ready') { var gi = (b2.records || []).filter(inU).sort(function (a, b) { return (b.ageDays || 0) - (a.ageDays || 0); }); if (gi.length) { var r = gi[0]; out.push({ rank: 4, lt: r.lt, tag: 'Overdue inspection', title: r.text.split(':')[0] + (r.lid ? ' – ' + r.lid + (r.km != null ? ' km ' + PE.fmtKm(r.km, r.m) : '') : ''), why: r.text.split(': ').slice(1).join(': '), go: r.lid && r.km != null ? { view: 'loc', arg: r.lid + '|' + r.km + '|' + (r.m || 0) } : { view: 'ov' }, btn: 'Open the place' }); } }
+        var b1 = get('B1'); if (b1 && b1.status === 'ready') (b1.records || []).filter(inU).sort(function (a, b) { return b.n - a.n; }).slice(0, 1).forEach(function (r) { out.push({ rank: 4, lt: r.lt, tag: 'Overdue check', title: 'Not recorded: ' + r.lid + ' km ' + PE.fmtKm(r.km, r.m) + ' – ' + PE.fmtKm(r.km2, r.m2), why: r.text + ' (' + (Math.round(r.n * 0.2 * 10) / 10) + ' km).', go: { view: 'loc', arg: r.lid + '|' + r.km + '|' + (r.m || 0) }, btn: 'Open the place' }); });
     out.sort(function (a, b) { return a.rank - b.rank; });
     return out;
   };

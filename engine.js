@@ -281,11 +281,13 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   // OHE mast <-> chainage hook (FOUNDATION D.1): the user's list comes later as rows {lid, mast, km, m}; key = section-line + mast (mast
   // numbers repeat between sections). Until PE.setMasts is given a list, every mast stays "not placed – waiting for the mast list".
   // Nothing is fetched from TMS for masts.
-  var MASTS = null;
+  var MASTS = null, ALLM = null;
   // [C] mast number normalised: case, spaces, prefixes "AC" / "M" / "SE" / "TP" / "OHE" / "MAST NO" removed; "42 / 10 a" -> "42/10A", "4602" -> "4602"
   PE.mastKey = function (t) { var s = String(t || '').toUpperCase().replace(/\b(OHE\s*MAST|MAST\s*NO\.?|MAST|OHE|TP|AC|SE|M)\b\.?/g, ' ').replace(/\s+/g, ''); var m = s.match(/(\d{1,3})\/(\d{1,3})([A-Z]?)/) || s.match(/^[-:]*(\d{2,6})([A-Z]?)$/); if (!m) return ''; return m[3] !== undefined ? (+m[1]) + '/' + (+m[2]) + m[3] : (+m[1]) + (m[2] || ''); };
-  PE.setMasts = function (rows) { if (!rows) { MASTS = null; return 0; } MASTS = {}; (rows || []).forEach(function (r) { var k = PE.mastKey(r.mast); if (!k || !r.lid) return; (MASTS[k] = MASTS[k] || []).push(r); }); return Object.keys(MASTS).length; };
+  PE.setMasts = function (rows) { if (!rows) { MASTS = null; ALLM = null; return 0; } ALLM = rows; MASTS = {}; (rows || []).forEach(function (r) { var k = PE.mastKey(r.mast); if (!k || !r.lid) return; (MASTS[k] = MASTS[k] || []).push(r); }); return Object.keys(MASTS).length; };
   PE.mastsLoaded = function () { return !!MASTS; };
+  PE.mastRows = function () { return ALLM || []; };
+  PE.mastsOnAny = function (lids) { if (!ALLM) return false; for (var i = 0; i < ALLM.length; i++) if (lids.indexOf(ALLM[i].lid) >= 0) return true; return false; };   // [C4] the TMS mast rows as loaded – the anchors for the RDPS calibration
   PE.mastToKm = function (lids, mast) {
     if (!MASTS) return null; var L = MASTS[PE.mastKey(mast)] || []; if (!L.length) return null;
     var hit = lids && lids.length ? L.filter(function (r) { return lids.indexOf(r.lid) >= 0; }) : L;
@@ -296,13 +298,20 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
   PE.ERH_RE = /\b(?:ERH|E)\s*[-:.]?\s*(\d{2,6}(?:\.\d+)?)\b/i;
   // [C] mast RANGES written in TMS mast format in remarks (user, 03-Nov): "37/20A-28A" (37/20A to 37/28A), "18/29-21/00" (18/29 to 21/00),
   // "km 5/03-07" (5/3 to 5/7). A date ("03/11/2026") is not a range: no '/' or digit right before, no '/' right after.
-  PE.MAST_RANGE_RE = /(?:\bkm\.?\s*)?(?<![\/\d])(\d{1,3})\s*\/\s*(\d{1,3}[A-Z]?)\s*(?:-|–|\bto\b)\s*(?:(\d{1,3})\s*\/\s*)?(\d{1,3}[A-Z]?)\b(?!\s*\/)/gi;
+  // [C4] a mast RANGE written the TMS way: "37/20A-28A", "18/29-21/00", "km 5/03-07". The mast number inside a km is one or two digits
+  // (with an optional letter) – THREE digits are metres ("km 54/850-660"), a quantity or a date, and are never read as masts.
+  PE.MAST_RANGE_RE = /(?:\bkm\.?\s*)?(?<![\/\d])(\d{1,3})\s*\/\s*(\d{1,2}[A-Z]?)\s*(?:-|–|\bto\b)\s*(?:(\d{1,3})\s*\/\s*)?(\d{1,2}[A-Z]?)(?![\d\/])/gi;
   PE.mastRanges = function (text) {
-    var out = [], re = new RegExp(PE.MAST_RANGE_RE.source, 'gi'), m;
-    while ((m = re.exec(String(text || '')))) out.push({ txt: m[0].trim(), from: (+m[1]) + '/' + m[2], to: (m[3] != null ? +m[3] : +m[1]) + '/' + m[4] });
+    var out = [], re = new RegExp(PE.MAST_RANGE_RE.source, 'gi'), m, t = String(text || '');
+    while ((m = re.exec(t))) {
+      var a = (+m[1]) + '/' + m[2], b = (m[3] != null ? +m[3] : +m[1]) + '/' + m[4];
+      var at = m.index, tail = t.slice(at + m[0].length, at + m[0].length + 6);
+      if (/^\s*\/\s*\d/.test(tail)) continue;                                  // "04/11-05/11/2026" – a date, not masts
+      if (/\b(ERH|E)\s*[-:.]?\s*$/i.test(t.slice(Math.max(0, at - 6), at))) continue;   // engine running hours
+      out.push({ txt: m[0].trim(), from: a, to: b });
+    }
     return out;
   };
-  /** both ends of a mast range on one section-line -> {lid, km, m, km2, m2} | null */
   PE.mastRangeToKm = function (lids, rg) {
     if (!MASTS) return null; var a = MASTS[PE.mastKey(rg.from)] || [], b = MASTS[PE.mastKey(rg.to)] || [];
     if (lids && lids.length) { a = a.filter(function (r) { return lids.indexOf(r.lid) >= 0; }); b = b.filter(function (r) { return lids.indexOf(r.lid) >= 0; }); }
@@ -330,8 +339,117 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       out.lines.push(n);
     });
     out.rdpsOnlyLines = Object.keys(R).filter(function (l) { return !T[l]; }).sort();
+    // [C4] what did not match, grouped by the shape of the mast number – so a whole family (a station prefix, a letter suffix) is visible at once
+    var shapes = function (L, src) { var g = {}; L.forEach(function (x) { var k = PE.mastShape(x.mast); var o = g[k] = g[k] || { shape: k, src: src, n: 0, lines: {}, sample: [] }; o.n++; o.lines[x.lid] = 1; if (o.sample.length < 6) o.sample.push(x.mast + ' (' + x.lid + ' ' + PE.fmtKm(x.km, x.m) + ')'); });
+      return Object.keys(g).map(function (k) { var o = g[k]; o.lines = Object.keys(o.lines).length; return o; }).sort(function (a, b) { return b.n - a.n; }); };
+    out.onlyTmsShapes = shapes(out.onlyTms, 'in TMS only'); out.onlyRdpsShapes = shapes(out.onlyRdps, 'in RDPS only');
     return out;
   };
+  // ---------------------------------------------------------------- [C4] RDPS calibrated on the TMS mast list (user, 04-Nov)
+  // The two files count chainage differently: RDPS gives the km you are IN, TMS the km post you have passed (RDPS "km 39, m 165" is
+  // mast 38/26), so most down lines read about +1,000 m. RDPS's own km / m is therefore NEVER used to place anything. Instead every
+  // RDPS mast is joined to the TMS mast of the same normalised number on the same section-line; those matched masts are the anchors
+  // (GPS <-> TMS chainage), and every other feature is placed by interpolating between the two nearest anchors along the survey.
+  // A feature with no matched mast on both sides, or with anchors of two different lines, is NOT placed and never shown.
+  var mt = function (km, m) { return (+km || 0) * 1000 + (+m || 0); };           // true metres along the line
+  var unmt = function (x) { var k = Math.floor(x / 1000); return { km: k, m: Math.round((x - k * 1000) * 10) / 10 }; };
+  PE.mtOf = mt;
+  /** mast number -> a shape, for grouping what did not match: "km/no", "km/no+letter", "plain number", "station/number", "other" */
+  PE.mastShape = function (s) {
+    var t = String(s || '').toUpperCase().replace(/\s+/g, '');
+    if (/^(?:TP|OHE(?:MAST)?|MAST(?:NO\.?)?)?[-:.]?(?:AC|SE|M)?\d{1,3}\/\d{1,3}$/.test(t)) return 'km/no';
+    if (/^(?:TP|OHE(?:MAST)?|MAST(?:NO\.?)?)?[-:.]?(?:AC|SE|M)?\d{1,3}\/\d{1,3}[A-Z]$/.test(t)) return 'km/no + letter';
+    if (/^[A-Z]{2,6}\/\d{1,5}[A-Z]?$/.test(t)) return 'station / number';
+    if (/^(?:TP|OHE|MAST)?[-:.]?\d{2,6}[A-Z]?$/.test(t)) return 'plain number';
+    return 'other';
+  };
+  /** points: the raw rows of one survey file [km, m, lat, lon, kind, label]; lids: the TMS section-lines this file may cover;
+   *  masts: the TMS mast rows {lid, key, km, m}. -> {place: [{i, lid, km, m} …], lines: {lid: {…}}, dropped: {reason: n}} */
+  PE.rdpsCalibrate = function (points, lids, masts) {
+    var byKey = {};                                                              // key -> TMS masts of the candidate lines only
+    (masts || []).forEach(function (r) { if (!r.lid || !r.key || lids.indexOf(r.lid) < 0 || r.notMast) return; (byKey[r.key] = byKey[r.key] || []).push(r); });
+    // the survey's own distance, from its GPS trail in file order: RDPS's km / m is not a running measure on a down survey
+    // (the km counts down while the metres count up inside each km), so it can never order or space the points.
+    var R6 = 6371000, rad = Math.PI / 180, cum = 0, prev = null;
+    var P = (points || []).map(function (p, i) {
+      if (p[2] != null && p[3] != null && (p[2] || p[3])) {
+        if (prev) { var dx = (p[3] - prev[1]) * rad * Math.cos((p[2] + prev[0]) / 2 * rad), dy = (p[2] - prev[0]) * rad; cum += Math.sqrt(dx * dx + dy * dy) * R6; }
+        prev = [p[2], p[3]];
+      }
+      return { i: i, x: cum, k: p[4], t: p[5] };
+    });
+    var order = P;
+    // 1. anchors: an RDPS mast whose number is in the TMS list of exactly one candidate line
+    var anc = [], amb = [];
+    order.forEach(function (p) {
+      if (p.k !== 'mast') return; var key = PE.mastKey(p.t); if (!key) return;
+      var hit = byKey[key]; if (!hit || !hit.length) return;
+      if (hit.length === 1) anc.push({ i: p.i, x: p.x, lid: hit[0].lid, tx: mt(hit[0].km, hit[0].m), km: +hit[0].km, m: +hit[0].m || 0 });
+      else amb.push({ i: p.i, x: p.x, hit: hit, key: key });
+    });
+    // a number that several candidate lines carry goes to the line of the nearest sure anchor (the survey stays on one line at a time)
+    amb.forEach(function (a) {
+      var near = null, d = Infinity; anc.forEach(function (b) { var q = Math.abs(b.x - a.x); if (q < d) { d = q; near = b; } });
+      if (!near) return; var on = a.hit.filter(function (h) { return h.lid === near.lid; });
+      if (on.length === 1) anc.push({ i: a.i, x: a.x, lid: on[0].lid, tx: mt(on[0].km, on[0].m), km: +on[0].km, m: +on[0].m || 0 });
+    });
+    anc.sort(function (a, b) { return a.x - b.x; });
+    // 2. per line: keep the anchors that run in one direction (a wrong match jumps backwards – it is dropped, not trusted)
+    var lines = {}, kept = [];
+    anc.forEach(function (a) { (lines[a.lid] = lines[a.lid] || { lid: a.lid, anc: [], matched: 0, bad: 0 }).anc.push(a); });
+    // the longest run that keeps one direction (a mast number that TMS carries somewhere else jumps out of line – it is dropped, not trusted)
+    var longest = function (A, up) {
+      var tails = [], idx = [], prev = new Array(A.length);
+      for (var i = 0; i < A.length; i++) {
+        var v = up ? A[i].tx : -A[i].tx, lo = 0, hi = tails.length;
+        while (lo < hi) { var mid = (lo + hi) >> 1; if (tails[mid] <= v) lo = mid + 1; else hi = mid; }
+        tails[lo] = v; idx[lo] = i; prev[i] = lo ? idx[lo - 1] : -1;
+      }
+      var out = [], k = idx[tails.length - 1]; while (k != null && k >= 0) { out.push(A[k]); k = prev[k]; }
+      return out.reverse();
+    };
+    Object.keys(lines).forEach(function (lid) {
+      var L = lines[lid], A = L.anc; if (A.length < 2) { L.matched = A.length; return; }
+      var u = longest(A, true), d = longest(A, false); var out = u.length >= d.length ? u : d;
+      L.bad = A.length - out.length; L.anc = out; L.matched = out.length; L.up = out === u; kept = kept.concat(out);
+    });
+    kept.sort(function (a, b) { return a.x - b.x; });
+    // 3. residual of the calibration: each anchor placed again from its two neighbours (leave one out), in metres
+    Object.keys(lines).forEach(function (lid) {
+      var A = lines[lid].anc; var res = [];
+      for (var i = 1; i < A.length - 1; i++) {
+        var a = A[i - 1], b = A[i + 1], p = A[i]; if (b.x === a.x) continue;
+        res.push(Math.abs((a.tx + (p.x - a.x) / (b.x - a.x) * (b.tx - a.tx)) - p.tx));
+      }
+      res.sort(function (x, y) { return x - y; });
+      var L = lines[lid];
+      L.res = res; L.resN = res.length; L.resMed = res.length ? Math.round(res[Math.floor(res.length / 2)]) : null;
+      L.resMax = res.length ? Math.round(res[res.length - 1]) : null; L.placed = 0;
+      // the calibration must also HOLD: anchors that disagree with their own neighbours by more than 50 m mean the line is not calibrated
+      L.ok = A.length >= 2 && (L.resMed == null || L.resMed <= 50);
+      if (!L.ok) L.why = A.length < 2 ? 'fewer than two masts of this line are in the TMS mast list' : 'the calibration does not hold – the matched masts disagree with each other by ' + L.resMed + ' m (median)';
+    });
+    kept = kept.filter(function (a) { return lines[a.lid].ok; });
+    // 4. every feature between two anchors of the SAME line
+    var place = [], dropped = {}, drop = function (w) { dropped[w] = (dropped[w] || 0) + 1; };
+    if (kept.length < 2) { dropped['no two masts of this survey are in the TMS mast list – the line is not calibrated'] = P.length; return { place: [], lines: lines, dropped: dropped, anchors: kept.length }; }
+    var j = 0;
+    order.forEach(function (p) {
+      while (j < kept.length - 1 && kept[j + 1].x <= p.x) j++;
+      var a = null, b = null;
+      for (var q = j; q >= 0; q--) if (kept[q].x <= p.x) { a = kept[q]; break; }
+      for (var w = j; w < kept.length; w++) if (kept[w].x >= p.x) { b = kept[w]; break; }
+      if (!a || !b) { drop(a || b ? 'outside the matched masts of this survey (before the first or after the last)' : 'no mast of this survey is in the TMS mast list'); return; }
+      if (a.lid !== b.lid) { drop('between the last mast of ' + a.lid + ' and the first of ' + b.lid + ' – no matched mast on both sides of the same line'); return; }
+      var o;
+      if (a.x === b.x || a.i === b.i) o = { km: a.km, m: a.m };
+      else { var t = (p.x - a.x) / (b.x - a.x); o = a.km === b.km ? { km: a.km, m: Math.round((a.m + t * (b.m - a.m)) * 10) / 10 } : unmt(a.tx + t * (b.tx - a.tx)); }
+      place.push({ i: p.i, lid: a.lid, km: o.km, m: o.m, anchor: a.i === p.i });
+      lines[a.lid].placed++;
+    });
+    return { place: place, lines: lines, dropped: dropped, anchors: kept.length };
+  };
+
   PE.ASSET_RE = /\b(?:PT|POINT|PTS|T\/?O|X-?ING)\.?\s*(?:NO|NOS)?\.?\s*[-:.]?\s*(\d{1,3}\s*[A-Z]?)\b/i;
 
   /** ctx from the slim blockSections file {coa:[...], yards:[...]} + optional asset index {"lid|88A": [km, m]} */
@@ -413,7 +531,12 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       // OHE mast numbers in the texts: kept on the record; placed exactly once the user's mast list is loaded (hook PE.mastToKm)
       var rgs = PE.mastRanges(all);
       if (rgs.length) { W.mastRanges = rgs.map(function (r) { return r.txt; }); var lidsC = cands.map(function (x) { return x.lid; });
-        for (var ri = 0; ri < rgs.length; ri++) { var rk = PE.mastRangeToKm(lidsC, rgs[ri]); if (rk) { W.lid = rk.lid; W.km = rk.km; W.m = rk.m; W.km2 = rk.km2; W.m2 = rk.m2; W.how = 'mast'; W.note = 'OHE masts ' + rgs[ri].from + ' to ' + rgs[ri].to; W.key = PE.cellKey(W.lid, W.km, W.m); return W; } } }
+        for (var ri = 0; ri < rgs.length; ri++) { var rk = PE.mastRangeToKm(lidsC, rgs[ri]); if (rk) { W.lid = rk.lid; W.km = rk.km; W.m = rk.m; W.km2 = rk.km2; W.m2 = rk.m2; W.how = 'mast'; W.note = 'OHE masts ' + rgs[ri].from + ' to ' + rgs[ri].to; W.key = PE.cellKey(W.lid, W.km, W.m); return W; } }
+        // [C4] why the range could not be used – kept on the record so Data health can say it in words
+        W.mastWhy = !PE.mastsLoaded() ? 'TMS mast list not loaded yet'
+          : !lidsC.length ? 'the place in the row is not a TMS section-line, so there is no mast list to look in'
+          : !PE.mastsOnAny(lidsC) ? 'the TMS mast list has no masts for ' + lidsC.slice(0, 2).join(' / ')
+          : 'masts ' + rgs[0].from + ' to ' + rgs[0].to + ' are not both in the TMS mast list of ' + lidsC.slice(0, 2).join(' / '); }
       var masts = []; var mre = new RegExp(PE.MAST_RE.source, 'gi'), mm; while ((mm = mre.exec(all))) masts.push(mm[0].replace(/\s+/g, ''));
       if (masts.length) { W.masts = masts; for (var mi = 0; mi < masts.length; mi++) { var mk0 = PE.mastToKm(cands.map(function (x) { return x.lid; }), masts[mi]); if (mk0) { W.lid = mk0.lid; W.km = mk0.km; W.m = mk0.m; W.km2 = mk0.km; W.m2 = mk0.m; W.how = 'mast'; W.key = PE.cellKey(W.lid, W.km, W.m); return W; } } }
       if (cands.length && kt) {   // field km on the block section's line
@@ -428,7 +551,7 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
         if (cands.length > 1) W.also = cands.slice(1).map(function (x) { return x.lid; });
         return W;
       }
-      if (rgs.length) { W.how = 'mast'; W.note = 'OHE masts ' + rgs[0].from + ' to ' + rgs[0].to + (PE.mastsLoaded() ? ' – not both in the TMS mast list for this line' : ' – TMS mast list not loaded yet'); return W; }
+      if (rgs.length) { W.how = 'mast'; W.note = 'OHE masts ' + rgs[0].from + ' to ' + rgs[0].to + (PE.mastsLoaded() ? ' – not both in the TMS mast list for this line' : ' – TMS mast list not loaded yet'); W.mastWhy = W.note; return W; }
       var mast = all.match(PE.MAST_RE);
       if (mast) { W.how = 'mast'; W.note = 'OHE mast ' + mast[0].replace(/\s+/g, ' ') + (PE.mastsLoaded() ? ' – not in the TMS mast list for this line' : ' – TMS mast list not loaded yet'); return W; }
       if (W.note) return W;
@@ -561,8 +684,8 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
           if (!r.dem && !r.giv && !r.trk && !r.tos) return;   // a day with no block and no output: not a work event
           var w = ctx.L ? ctx.L.locate({ bsText: r.bs || r.sec, lineText: r.ln, lineKeys: [N.lineKey(r.ln)].filter(Boolean), texts: [rmk] }) : { how: 'none' };
           var sl = N.lineId(r.sec, r.ln);
-          if (!w.lid && sl) { w = { lid: sl, how: 'section', approx: true, key: null, note: 'section only' }; }
-          r.lid = w.lid; r.km = w.km; r.m = w.m; r.km2 = w.km2; r.m2 = w.m2; r.how = w.how; r.approx = w.approx; r.key = w.key;
+          if (!w.lid && sl) { w = { lid: sl, how: 'section', approx: true, key: null, note: 'section only', mastWhy: w.mastWhy }; }   // [C4] keep why a mast range failed
+          r.lid = w.lid; r.km = w.km; r.m = w.m; r.km2 = w.km2; r.m2 = w.m2; r.how = w.how; r.approx = w.approx; r.key = w.key; if (w.mastWhy) r.mastWhy = w.mastWhy;   // [C4] why a mast range could not place this row
           count++; put(by, r.lid, r); if (!r.lid) miss(r, w.note || 'not located');
           if (ctx.recentFrom && String(r.d) >= ctx.recentFrom) all.push(r);
         });
@@ -650,22 +773,43 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
         tms: R.reportingDate || '', lines: Object.keys(all.reduce(function (o, r) { if (r.lid) o[r.lid] = 1; return o; }, {})).length };
     }
     else if (kind === 'rdps') {
-      // [C] RDPS survey points (prepared file, HWH lines): each point -> the TMS section-line of its route that covers its km (settings.rdps.routes,
-      // line extents from the TMS chart). RDPS supports – it never overrides TMS. Points: [km, m, lat, lon, kind, label].
-      var RT = (ctx.S && ctx.S.rdps && ctx.S.rdps.routes) || {}; var EX = ctx.extents || {}; var cov = {};
+      // [C4] RDPS survey points, CALIBRATED on the TMS mast list (project doc HWH_Portal_RDPS.md; user 04-Nov). RDPS counts the km it is in,
+      // TMS the km post passed, so the two chainages differ by about a km on most lines: RDPS's own km / m is never used to place anything.
+      // Every point is placed by interpolating between the two nearest RDPS masts that are in the TMS mast list (the anchors).
+      // A line without anchors, and a feature outside them, is NOT stored – so it is never shown on the location card or used by "Where am I".
+      var RT = (ctx.S && ctx.S.rdps && ctx.S.rdps.routes) || {}; var cov = {}; var MR = PE.mastRows();
+      var lineStat = {}, dropAll = {}, rawPts = 0;
+      if (!MR.length) extra.noMasts = 1;
       (R.files || []).forEach(function (fl) {
-        var rt = RT[fl.file]; if (!rt) { extra.unmapped = (extra.unmapped || []).concat([fl.file]); rt = { sections: [], lines: [] }; }   // [C1] an unmapped survey file is still loaded (points not tied to a TMS line, listed)
+        var pts = fl.points || []; rawPts += pts.length;
+        var rt = RT[fl.file]; if (!rt) { extra.unmapped = (extra.unmapped || []).concat([fl.file]); return; }
         var lids = []; rt.sections.forEach(function (sc) { rt.lines.forEach(function (ln) { var l = lidOf(sc, ln); if (l && lids.indexOf(l) < 0) lids.push(l); }); });
-        (fl.points || []).forEach(function (pt) {
-          var P = PE.P(pt[0], pt[1]); var lid = null;
-          for (var i = 0; i < lids.length && !lid; i++) { var e = EX[lids[i]]; if (e && P >= e[0] - 500 && P <= e[1] + 500) lid = lids[i]; }
-          var r = { f: fl.file, lid: lid, km: pt[0], m: pt[1], la: pt[2], lo: pt[3], k: pt[4], t: pt[5] };
-          count++; if (lid) { put(by, lid, r); var c = cov[lid] = cov[lid] || { n: 0, masts: 0, a: P, b: P, files: {} }; c.n++; if (pt[4] === 'mast') c.masts++; c.a = Math.min(c.a, P); c.b = Math.max(c.b, P); c.files[fl.file] = 1; }
-          else if (pt[4] !== 'kmpost') miss(r, lids.length ? 'km not on any TMS line of this route' : 'survey file ' + fl.file + ' not mapped to TMS section-lines (Settings → rdps.routes)');
-          if (pt[4] !== 'kmpost' && pt[4] !== 'other') all.push(pt[4] === 'mast' ? [lid || '', pt[0], pt[1], pt[2], pt[3], pt[4], pt[5]] : [lid || '', pt[0], pt[1], pt[2], pt[3], pt[4]]);   // mast label kept for the cross-check with the TMS mast list
+        if (!lids.length) { extra.unmapped = (extra.unmapped || []).concat([fl.file]); return; }
+        var cal = PE.rdpsCalibrate(pts, lids, MR);
+        Object.keys(cal.dropped).forEach(function (w) { dropAll[w] = (dropAll[w] || 0) + cal.dropped[w]; });
+        Object.keys(cal.lines).forEach(function (l) {
+          var x = cal.lines[l]; var o = lineStat[l] = lineStat[l] || { lid: l, matched: 0, outOfOrder: 0, placed: 0, res: [], ok: false, why: '', files: [] };
+          o.matched += x.matched; o.outOfOrder += x.bad || 0; o.placed += x.placed || 0; o.res = o.res.concat(x.ok ? (x.res || []) : []);
+          if (x.ok) o.ok = true; else if (!o.ok && x.why) o.why = x.why;
+          if (o.files.indexOf(fl.file) < 0) o.files.push(fl.file);
+        });
+        cal.place.forEach(function (q) {
+          var pt = pts[q.i]; var P = PE.P(q.km, q.m);
+          var r = { f: fl.file, lid: q.lid, km: q.km, m: q.m, la: pt[2], lo: pt[3], k: pt[4], t: pt[5], cal: 1 };
+          count++; put(by, q.lid, r);
+          var c = cov[q.lid] = cov[q.lid] || { n: 0, masts: 0, a: P, b: P, files: {} };
+          c.n++; if (pt[4] === 'mast') c.masts++; c.a = Math.min(c.a, P); c.b = Math.max(c.b, P); c.files[fl.file] = 1;
+          if (pt[4] !== 'kmpost' && pt[4] !== 'other') all.push(pt[4] === 'mast' ? [q.lid, q.km, q.m, pt[2], pt[3], pt[4], pt[5]] : [q.lid, q.km, q.m, pt[2], pt[3], pt[4]]);
         });
       });
+      Object.keys(dropAll).sort(function (a, b) { return dropAll[b] - dropAll[a]; }).slice(0, 12).forEach(function (w) { miss({ n: dropAll[w] }, w); });
       extra.coverage = Object.keys(cov).map(function (l) { var c = cov[l]; return { lid: l, points: c.n, masts: c.masts, a: c.a, b: c.b, files: Object.keys(c.files) }; });
+      extra.calib = Object.keys(lineStat).sort().map(function (l) {
+        var o = lineStat[l], r = o.res.sort(function (a, b) { return a - b; });
+        return { lid: l, matched: o.matched, outOfOrder: o.outOfOrder, placed: o.placed, ok: o.ok, why: o.ok ? '' : o.why, files: o.files,
+          resN: r.length, resMed: r.length ? Math.round(r[Math.floor(r.length / 2)]) : null, resMax: r.length ? Math.round(r[r.length - 1]) : null };
+      });
+      extra.rawPoints = rawPts; extra.notPlaced = rawPts - count; extra.dropReasons = dropAll;
     }
     else if (kind === 'itms') {
       // ITMS press file: records.runs [{section, line, runId, run, date, kmFrom, kmTo, folder, files:[{name, rep, size}]}]; the PDFs stay on the PC
@@ -1719,11 +1863,37 @@ var PE = (typeof PE !== 'undefined' && PE) || {};
       views[v] = PE.computeView(Dv); views[v].view = v;
     });
     var out = Object.assign({}, views.main); out.v = 2; out.views = views; out.lineTypes = counts; out.unknownSample = unknown.slice(0, 50);
-    // [C] OHE mast placement: rows that name a mast (or a mast range in TMS mast format) and how many of them the TMS mast list placed exactly
-    var mc = function (list, get) { var o = { refs: 0, placed: 0 }; (list || []).forEach(function (r) { var g = get(r); if (!g.refs) return; o.refs++; if (g.placed) o.placed++; }); return o; };
+    // [C4] what the OHE mast list actually placed, and why the rest could not be placed (shown on Data health, in words)
+    var bucket = function (w) {
+      if (!w) return 'Not placed, and the portal recorded no reason';
+      if (/not loaded yet/.test(w)) return 'The TMS mast list was not loaded when these rows were read';
+      if (/has no masts for/.test(w)) return 'The TMS mast list holds no masts for that section-line';
+      if (/not a TMS section-line/.test(w)) return 'The row names no TMS section-line, so there is no mast list to look in';
+      if (/not both in the TMS mast list/.test(w)) return 'One or both masts of the range are not in the TMS mast list of that line';
+      return w;
+    };
+    var mc = function (list, get) {
+      var o = { refs: 0, placed: 0, byKm: 0, notPlaced: 0, reasons: {}, samples: [] };
+      (list || []).forEach(function (r) {
+        var g = get(r); if (!g.refs) return; o.refs++;
+        if (g.placed) { o.placed++; return; }
+        if (g.exact) { o.byKm++; return; }
+        o.notPlaced++; var b = bucket(g.why); o.reasons[b] = (o.reasons[b] || 0) + 1;
+        if (o.samples.length < 12) o.samples.push({ what: g.what, where: g.where, why: g.why || b });
+      });
+      return o;
+    };
     out.mastPlace = { loaded: PE.mastsLoaded ? PE.mastsLoaded() : false,
-      machineProg: mc(D.mpRecent, function (r) { return { refs: (r.masts || []).length + (r.mastRanges || []).length, placed: r.how === 'mast' && r.lid && !r.approx }; }),
-      fmc: mc(D.fmc, function (r) { var w = r.where || {}; return { refs: (r.masts || []).length + ((w.masts || []).length) + ((w.mastRanges || []).length), placed: w.how === 'mast' && w.lid && !w.approx }; }) };
+      machineProg: mc(D.mpRecent, function (r) {
+        var w = r.where || r; var ranges = (r.mastRanges || []);
+        return { refs: ranges.length + (r.masts || []).length, placed: r.how === 'mast' && r.lid && !r.approx, exact: r.lid && !r.approx,
+          why: r.mastWhy, what: ranges.join(', ') || (r.masts || []).join(', '), where: (r.lid || r.sec || '') + ' ' + (r.ln || '') + ' · ' + (r.mc || '') + ' ' + PE.istDate(r.d) };
+      }),
+      fmc: mc(D.fmc, function (r) {
+        var w = r.where || {}; var ranges = (w.mastRanges || []), ms = (w.masts || r.masts || []);
+        return { refs: ranges.length + ms.length, placed: w.how === 'mast' && w.lid && !w.approx, exact: w.lid && !w.approx,
+          why: w.mastWhy || w.note, what: ranges.join(', ') || ms.join(', '), where: (r.bs || '') + ' ' + (r.line || '') + ' · ' + (r.u || '') + ' ' + PE.istDate(r.date) };
+      }) };
     out.erhRows = (D.mpRecent || []).filter(function (r) { return r.erh != null; }).length;
     out.unknownNames = Object.keys(names).map(function (k) { return names[k]; }).sort(function (a, b) { return b.n - a.n; }).slice(0, 600);
     return out;

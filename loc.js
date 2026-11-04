@@ -179,11 +179,14 @@ function ground(D, km, ci) {
   const head = (src) => `<div class="panel body" style="margin-top:12px"><div class="inner"><h3 style="margin:0 0 8px">On the ground here <span class="small muted">${src}</span></h3>`;
   if ((D.rdps || []).length) {
     const by = {}; R.forEach(r => { (by[r.k] = by[r.k] || []).push(r); });
-    return head('RDPS route survey (one-time GPS survey; TMS stays the reference)') + (R.length ? `<ul style="margin:0;padding-left:18px">${Object.keys(GK).filter(k => by[k]).map(k => `<li><b>${GK[k]}</b> (${by[k].length}): ${by[k].slice(0, 8).map(r => esc(String(r.t).replace(/^(TP\/OHE Mast|Point & Crossing|Curve (Start|End)|Bridge[^;]*)\s*/i, '')) + ' at ' + PE.fmtKm(r.km, r.m)).join(', ')}</li>`).join('')}</ul>` : '<div class="muted">RDPS survey covers this line; nothing surveyed in this 200 m.</div>') + '</div></div>';
+    return head('RDPS route survey, calibrated on the TMS mast list (TMS stays the reference)') + (R.length ? `<ul style="margin:0;padding-left:18px">${Object.keys(GK).filter(k => by[k]).map(k => `<li><b>${GK[k]}</b> (${by[k].length}): ${by[k].slice(0, 8).map(r => esc(String(r.t).replace(/^(TP\/OHE Mast|Point & Crossing|Curve (Start|End)|Bridge[^;]*)\s*/i, '')) + ' at ' + PE.fmtKm(r.km, r.m)).join(', ')}</li>`).join('')}</ul>` : '<div class="muted">RDPS survey covers this line; nothing surveyed in this 200 m.</div>') + '</div></div>';
   }
   const c = D.hl ? (D.hl.c || []).find(x => x[0] === km && x[1] === ci) : null; const f = c ? { cv: c[14], br: c[15], lw: c[16] } : {};
   const li = [f.cv ? `<li><b>Curve</b>: ${esc(f.cv)}</li>` : '', f.br ? `<li><b>Bridge</b>: ${esc(f.br)}</li>` : '', f.lw ? `<li><b>LWR / SWR</b>: ${esc(f.lw)}</li>` : ''].join('');
-  return head('from TMS data – RDPS survey not available for this line') + (li ? `<ul style="margin:0;padding-left:18px">${li}</ul>` : '<div class="muted">TMS chart data shows no curve, bridge or LWR in this 200 m.</div>') + '</div></div>';
+  // [C4] a line the RDPS survey covers but could not be calibrated on the TMS mast list is NOT used – say which of the two it is
+  const cb = (((((H.S.boot || {}).loaded || {}).rdps) || []).filter(x => x.complete && x.summary).pop() || {});
+  const cl = ((cb.summary && cb.summary.extra && cb.summary.extra.calib) || []).find(c => c.lid === D.lid);
+  return head(cl ? 'from TMS data – the RDPS survey of this line could not be calibrated on the TMS mast list (' + esc(cl.why || 'not calibrated') + '), so it is not used' : 'from TMS data – no RDPS survey for this line') + (li ? `<ul style="margin:0;padding-left:18px">${li}</ul>` : '<div class="muted">TMS chart data shows no curve, bridge or LWR in this 200 m.</div>') + '</div></div>';
 }
 H.lineData = lineData; H.evRefs = evRefs;
 })();

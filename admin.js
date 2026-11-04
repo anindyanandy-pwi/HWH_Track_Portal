@@ -100,6 +100,7 @@ async function run(force) {
     const bsRow = PLAN.rows.find(r => r.kind === 'blockSections');
     if (bsRow && bsRow.last) { const last = bsRow.last; const parts = await Promise.all(last.files.map(f => readJson('blockSections/' + f))); const sl = PE.slimPress('blockSections', PE.combineParts(parts), { N }); L = PE.locator(N, sl.all[0], null); }
     else { H.S.L = null; L = await H.locator(); }
+    let newMasts = false;
     const omRow = PLAN.rows.find(r => r.kind === 'oheMast');
     if (!(omRow && omRow.fresh && omRow.fresh.length) && !force) {   // [C3] no new mast list in the folder: use the one already stored, so masts still place records
       try { const fl = await H.files([{ kind: 'oheMast', group: '_all' }]); const om = H.snap(fl, 'oheMast', '_all'); if (om && om.length) { PE.setMasts(om); say(`OHE mast list: ${om.length} masts already stored – used to place records that name a mast.`); } } catch (e) { }
@@ -120,7 +121,8 @@ async function run(force) {
         // [PB] B3: an empty press never replaces earlier good data – nothing is written, the press is only marked as read
         // [C3] a press is only EMPTY when the file really holds no rows; rows present + nothing slimmed = the file shape was not understood
         const rawRows = PE.pressRows(F);
-        if (kind === 'oheMast' && sl.all.length) { PE.setMasts(sl.all); say(`   OHE mast list ready – records that name a mast are placed with it from here on`); }
+        if (kind === 'oheMast' && sl.all.length) { PE.setMasts(sl.all); newMasts = true; say(`   OHE mast list ready – records that name a mast are placed with it from here on`); }
+        if (kind === 'rdps' && !sl.count && !PE.mastRows().length) { say(`   the RDPS survey is placed on the TMS mast list and that list is not loaded – nothing stored (load the OHE mast list, then load again)`); results.push({ kind, pressId: p.pressId, count: 0, needs: 'oheMast' }); continue; }
         if (!sl.count && rawRows > 0) throw new Error(`file shape not understood – the file holds ${rawRows} rows but the portal read none of them (${kind}, press ${PE.pressLabel(p)}). The loader for this kind must be updated; nothing was changed.`);
         if (!sl.count && kind !== 'blockSections') {
           const good = (((H.S.boot || {}).loaded || {})[kind] || []).filter(x => x.complete && !(x.summary && x.summary.empty) && (x.rows || (x.summary && x.summary.count))).pop();
@@ -141,6 +143,24 @@ async function run(force) {
         if (kind === 'blockSections') L = PE.locator(N, sl.all[0], null);
         results.push({ kind, pressId: p.pressId, count: sl.count, located: sl.located, unlocated: sl.unlocated, tms: sl.tmsCounts });
         } catch (e) { say(`   ERROR in ${PE.KIND_LABEL[kind] || kind}: ${e.error || e.message || e} – this step skipped, carrying on with the next`); results.push({ kind, pressId: p.pressId, error: String(e.error || e.message || e) }); }
+      }
+    }
+    // [C4] a new mast list changes where OTHER kinds sit: machine progress is read again from the folder so its mast ranges are placed
+    if (newMasts && !force) {
+      const mrow = PLAN.rows.find(r => r.kind === 'machineProg');
+      const last = mrow && mrow.last;
+      if (last && !(mrow.fresh || []).some(p => p.pressId === last.pressId)) {
+        try {
+          say(`Machine progress – reading the newest press again with the mast list just loaded…`);
+          const parts = []; for (const f of last.files) parts.push(await readJson('machineProg/' + f));
+          const F2 = PE.combineParts(parts); F2.pressId = F2.pressId || last.pressId;
+          const sl2 = PE.slimPress('machineProg', F2, { N, L, recentFrom, S });
+          const byMast = Object.values(sl2.byGroup).flat().filter(x => x.how === 'mast' && x.lid && !x.approx).length;
+          say(`   ${sl2.count} machine days, ${byMast} placed exactly by an OHE mast range in the remark`);
+          const files2 = []; for (const g of Object.keys(sl2.byGroup)) files2.push({ group: g, rows: sl2.byGroup[g].length, b64: await gzB64(JSON.stringify(sl2.byGroup[g])) });
+          if (sl2.all && sl2.all.length) files2.push({ group: '_all', rows: sl2.all.length, b64: await gzB64(JSON.stringify(sl2.all)) });
+          await send('machineProg', last.pressId, last.at, files2, { pressLabel: last.pressLabel, count: sl2.count, located: sl2.located, unlocated: sl2.unlocated, unlocatedSample: sl2.unlocatedSample.slice(0, 20), extra: sl2.extra, byMast }, true, say);
+        } catch (e) { say(`   ERROR reading machine progress again: ${e.error || e.message || e} – the stored one is kept`); }
       }
     }
     if (PLAN.hFresh || force) {
